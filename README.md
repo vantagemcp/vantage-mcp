@@ -6,6 +6,8 @@ Vantage is an MCP server that checks whether ChatGPT, Perplexity, and Gemini cit
 
 Published on the [Official MCP Registry](https://registry.modelcontextprotocol.io/) under the domain-verified namespace `dev.vantagemcp/vantage`.
 
+> **Not to be confused with:** [vantage.sh](https://www.vantage.sh), a cloud cost-management company with its own, unrelated MCP server also named Vantage. Different product, same name.
+
 ## Install
 
 Add to your MCP client config:
