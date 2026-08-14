@@ -144,6 +144,52 @@ def citation_structure(keyword: str) -> dict:
     return dfs.citation_structure(keyword=keyword)
 
 
+@mcp.tool()
+def citation_structure_batch(keywords: list[str]) -> dict:
+    """Analyze the structural shape of the winning AI answer across several
+    related keywords/topics in one call: does each lead with a list, how
+    long is the opening, how many sources it cites. Use this for content
+    planning across a topic cluster, e.g. before writing several related
+    pieces meant to get cited, instead of calling citation_structure once
+    per topic.
+
+    Args:
+        keywords: topics/queries to analyze, e.g. ["how to reduce churn",
+            "churn rate benchmarks", "reduce customer churn saas"]. Max 10.
+    """
+    if not keywords:
+        return {"error": "keywords list is empty."}
+    if len(keywords) > 10:
+        return {"error": f"Max 10 keywords per batch call, got {len(keywords)}."}
+    if err := _guard_balance():
+        return {"error": err}
+
+    results = []
+    for kw in keywords:
+        if err := _guard_usage():
+            results.append({"keyword": kw, "error": err})
+            continue
+        try:
+            results.append(dfs.citation_structure(keyword=kw))
+        except dfs.DataForSEOError as e:
+            # A per-keyword provider error must not sink the whole batch -
+            # this call already consumed one unit of usage above, so the
+            # keyword still needs a result entry, just one marked failed.
+            results.append({"keyword": kw, "error": str(e)})
+
+    analyzed = [r for r in results if "error" not in r]
+    summary = {
+        "topics_analyzed": len(analyzed),
+        "topics_requested": len(keywords),
+        "list_led_count": sum(1 for r in analyzed if r.get("leads_with_list")),
+        "avg_sources_cited": (
+            round(sum(r.get("num_sources_cited", 0) for r in analyzed) / len(analyzed), 1)
+            if analyzed else 0
+        ),
+    }
+    return {"results": results, "summary": summary}
+
+
 def main() -> None:
     if "--http" in sys.argv:
         # Bound to loopback deliberately - Caddy (or any reverse proxy)

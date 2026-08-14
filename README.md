@@ -39,6 +39,10 @@ Who dominates AI-answer citations for a topic, and whether a domain is among the
 How the winning AI answer for a topic is actually shaped: list-led, sources cited, opening length.
 > "What does a winning answer look like?"
 
+### `citation_structure_batch`
+Same as `citation_structure`, across up to 10 related topics in one call, for content planning across a cluster.
+> "What do winning answers look like across this whole topic cluster?"
+
 ## Example
 
 ```
