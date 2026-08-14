@@ -16,14 +16,19 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "vantage.db"
 
-# Calls per billing period (calendar month), matched to the pricing
-# discussed in the pilot plan. DataForSEO COGS is ~$0.10-0.15/call for
-# the two expensive tools, so the free tier is intentionally thin -
-# a generous free tier here loses money on day one.
+# Cost-units per billing period (calendar month), not raw call counts.
+# check_ai_visibility/citation_leaders cost 10 units/call (DataForSEO
+# COGS ~$0.10-0.15/call), citation_structure(_batch) costs 1 unit/call
+# (COGS ~$0.004/call). Limits are the old call-based limits x10, so
+# worst-case cost exposure (all-expensive-calls) is unchanged from the
+# original per-tier caps - a generous free tier still doesn't lose
+# money on day one - but a user who only wants the cheap, differentiated
+# structure tool gets a genuinely generous free experience instead of
+# being capped the same as the expensive tools.
 TIER_LIMITS = {
-    "free": 3,
-    "pro": 50,
-    "team": 150,
+    "free": 30,
+    "pro": 500,
+    "team": 1500,
 }
 
 
@@ -183,11 +188,13 @@ def verify(token: str) -> dict | None:
     return {"client_id": row[0], "tier": row[1]}
 
 
-def check_and_consume(client_id: str, tier: str) -> tuple[bool, int, str | None]:
+def check_and_consume(client_id: str, tier: str, cost: int) -> tuple[bool, int, str | None]:
     """Check this billing period's usage against the tier cap, and
-    consume one call if under it (checked BEFORE the paid DataForSEO
-    call runs, so a rejected call never costs us anything). Returns
-    (allowed, calls_remaining_after, reason_if_denied).
+    consume `cost` units if there's room (checked BEFORE the paid
+    DataForSEO call runs, so a rejected call never costs us anything).
+    `cost` is required, not defaulted, so every caller states its own
+    tool's weight explicitly rather than silently inheriting a wrong one.
+    Returns (allowed, units_remaining_after, reason_if_denied).
     """
     limit = TIER_LIMITS.get(tier, 0)
     period = _current_period()
@@ -197,16 +204,17 @@ def check_and_consume(client_id: str, tier: str) -> tuple[bool, int, str | None]
         ).fetchone()
         used = row[0] if row else 0
 
-        if used >= limit:
-            return False, 0, (
-                f"Usage cap reached for this billing period ({used}/{limit} calls on the "
-                f"'{tier}' tier). Upgrade at vantagemcp.dev/pricing, or wait for next period."
+        if used + cost > limit:
+            return False, max(limit - used, 0), (
+                f"Usage cap reached for this billing period ({used}/{limit} units on the "
+                f"'{tier}' tier, this call needs {cost}). Upgrade at vantagemcp.dev/pricing, "
+                "or wait for next period."
             )
 
         conn.execute(
-            "INSERT INTO usage (client_id, period, calls_used) VALUES (?, ?, 1) "
-            "ON CONFLICT(client_id, period) DO UPDATE SET calls_used = calls_used + 1",
-            (client_id, period),
+            "INSERT INTO usage (client_id, period, calls_used) VALUES (?, ?, ?) "
+            "ON CONFLICT(client_id, period) DO UPDATE SET calls_used = calls_used + ?",
+            (client_id, period, cost, cost),
         )
         conn.commit()
-    return True, limit - used - 1, None
+    return True, limit - used - cost, None

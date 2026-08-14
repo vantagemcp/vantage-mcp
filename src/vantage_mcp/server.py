@@ -63,19 +63,21 @@ def _guard_balance() -> str | None:
     return None
 
 
-def _guard_usage() -> str | None:
+def _guard_usage(cost: int) -> str | None:
     """Metering gate, checked BEFORE any paid DataForSEO call.
 
     No access token present means stdio/local-dev mode (there's no
     HTTP auth layer to have populated one) - trusted, unmetered. Over
     Streamable HTTP a token is always required, so this always applies
-    to real customers.
+    to real customers. `cost` is the calling tool's unit weight (10 for
+    the two expensive DataForSEO calls, 1 for the two cheap structure
+    ones) - see TIER_LIMITS in store.py for why.
     """
     token = get_access_token()
     if token is None:
         return None
     tier = tier_from_scopes(token.scopes)
-    allowed, _remaining, reason = store.check_and_consume(token.client_id, tier)
+    allowed, _remaining, reason = store.check_and_consume(token.client_id, tier, cost)
     return None if allowed else reason
 
 
@@ -89,7 +91,7 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
         domain: bare domain to check, e.g. "example.com" (no https://, no www).
         platform: one of "chat_gpt", "perplexity", "gemini". Defaults to chat_gpt.
     """
-    if err := _guard_usage():
+    if err := _guard_usage(10):
         return {"error": err}
     if err := _guard_balance():
         return {"error": err}
@@ -114,7 +116,7 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: s
         platform: one of "chat_gpt", "perplexity", "gemini". Defaults to chat_gpt.
         compare_domain: optional bare domain to flag if present in the results.
     """
-    if err := _guard_usage():
+    if err := _guard_usage(10):
         return {"error": err}
     if err := _guard_balance():
         return {"error": err}
@@ -137,7 +139,7 @@ def citation_structure(keyword: str) -> dict:
     Args:
         keyword: the topic/query to analyze, e.g. "how to reduce churn".
     """
-    if err := _guard_usage():
+    if err := _guard_usage(1):
         return {"error": err}
     if err := _guard_balance():
         return {"error": err}
@@ -166,7 +168,7 @@ def citation_structure_batch(keywords: list[str]) -> dict:
 
     results = []
     for kw in keywords:
-        if err := _guard_usage():
+        if err := _guard_usage(1):
             results.append({"keyword": kw, "error": err})
             continue
         try:

@@ -17,7 +17,7 @@ def main() -> None:
     if args.cmd == "create":
         plaintext, client_id = store.create_api_key(tier=args.tier)
         print(f"client_id: {client_id}")
-        print(f"tier:      {args.tier} ({store.TIER_LIMITS[args.tier]} calls/month)")
+        print(f"tier:      {args.tier} ({store.TIER_LIMITS[args.tier]} units/month)")
         print(f"api_key:   {plaintext}")
         print("\nShown once - store it now. Use as a Bearer token against the hosted endpoint.")
 
