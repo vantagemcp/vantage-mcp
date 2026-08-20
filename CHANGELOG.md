@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.3] - 2026-08-21
+
+### Changed
+- All 4 tools now declare MCP annotations (`read_only_hint`, `destructive_hint`, `idempotent_hint`, `open_world_hint`) - none of them write anything or have side effects, so agents can rely on structured metadata instead of inferring it from prose.
+- Every tool's docstring now states its read-only/retry-safe status and quota cost explicitly, documents its actual return shape field-by-field, and names the most relevant sibling tool for when this one isn't the right fit.
+
 ## [1.1.1] - 2026-08-20
 
 ### Fixed

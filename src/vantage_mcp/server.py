@@ -18,6 +18,7 @@ from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 
 from vantage_mcp import dataforseo_client as dfs
 from vantage_mcp import store
@@ -26,6 +27,17 @@ from vantage_mcp.auth import VantageTokenVerifier, tier_from_scopes
 MIN_BALANCE_USD = 1.0  # same hard-stop guardrail as the source pipeline
 BASE_URL = "https://vantagemcp.dev"
 DOMAIN = "vantagemcp.dev"
+
+# All 4 tools share this exact profile: pure reads against a third-party
+# data provider, no writes, safe to retry, results depend on external
+# (non-deterministic over time) data. One shared constant so the 4
+# @mcp.tool() calls below don't repeat identical annotation blocks.
+READ_ONLY_EXTERNAL = ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=True,
+)
 
 # The SDK's DNS-rebinding protection validates the Host/Origin headers
 # against an explicit allowlist - leaving it unconfigured meant an empty
@@ -112,11 +124,21 @@ def _guard_usage(cost: int) -> str | None:
     return None if allowed else reason
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
     """Check how many times a domain is cited in AI-generated answers on a
     given AI platform (chat_gpt, perplexity, gemini). Use this to answer
     'is my brand/domain visible in AI search' or 'does ChatGPT know about us'.
+
+    Read-only: no side effects, safe to retry. Costs 10 quota units/call
+    (free tier: 3 checks/month total across all tools).
+
+    Returns: {"domain", "platform", "mentions_found" (int - how many times
+    the domain was cited in the provider's tracked answers for this
+    platform), "visible" (bool - true if mentions_found > 0)}.
+
+    Use citation_leaders instead if you want a ranked list of who's
+    winning for a topic rather than one domain's own count.
 
     Args:
         domain: bare domain to check, e.g. "example.com" (no https://, no www).
@@ -161,12 +183,23 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: str | None = None) -> dict:
     """Find which domains dominate AI-answer citations for a topic/keyword,
     and optionally check whether a specific domain shows up among them.
     Use this to answer 'who's winning AI search for this topic' or
     'is my competitor cited more than me for X'.
+
+    Read-only: no side effects, safe to retry. Costs 10 quota units/call
+    (free tier: 3 checks/month total across all tools).
+
+    Returns: {"keyword", "platform", "top_domains" (list of {"domain",
+    "mentions"}, most-cited domains for this keyword/platform, order as
+    ranked by the provider), "compare_domain_present" (bool, only present
+    when compare_domain was passed)}.
+
+    Use check_ai_visibility instead if you already know which domain you
+    care about and just want its own citation count, not a leaderboard.
 
     Args:
         keyword: the topic/query to check, e.g. "best project management tool".
@@ -198,13 +231,23 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: s
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def citation_structure(keyword: str) -> dict:
     """Analyze the structural shape of the AI-generated answer actually
     cited for a keyword: does it lead with a list, how long is the opening
     passage, how many sources does it cite and from which domains. Use
     this to understand what a winning AI-search answer looks like for a
     topic, e.g. before writing content meant to get cited.
+
+    Read-only: no side effects, safe to retry. Costs 1 quota unit/call
+    (free tier: 3 checks/month total across all tools).
+
+    Returns: {"keyword", "leads_with_list" (bool), "opening_word_count"
+    (int), "opening_has_number" (bool), "num_sources_cited" (int),
+    "source_domains" (list of up to 10 domain strings)}.
+
+    Use citation_structure_batch instead if you need this for more than
+    one keyword - one call per topic here adds up fast for a cluster.
 
     Args:
         keyword: the topic/query to analyze, e.g. "how to reduce churn".
@@ -230,7 +273,7 @@ def citation_structure(keyword: str) -> dict:
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def citation_structure_batch(keywords: list[str]) -> dict:
     """Analyze the structural shape of the winning AI answer across several
     related keywords/topics in one call: does each lead with a list, how
@@ -238,6 +281,16 @@ def citation_structure_batch(keywords: list[str]) -> dict:
     planning across a topic cluster, e.g. before writing several related
     pieces meant to get cited, instead of calling citation_structure once
     per topic.
+
+    Read-only: no side effects, safe to retry. Costs 1 quota unit per
+    keyword in the batch (free tier: 3 checks/month total across all
+    tools). A per-keyword provider error doesn't fail the whole batch -
+    that keyword's entry just carries an "error" field instead.
+
+    Returns: {"results" (list, one {"keyword", ...same shape as
+    citation_structure, or "error"} per keyword, in the order given),
+    "summary": {"topics_analyzed", "topics_requested", "list_led_count",
+    "avg_sources_cited"}}.
 
     Args:
         keywords: topics/queries to analyze, e.g. ["how to reduce churn",
