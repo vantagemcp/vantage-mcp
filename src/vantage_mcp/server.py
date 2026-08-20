@@ -10,7 +10,9 @@ where API-key auth + usage metering actually apply):
     python -m vantage_mcp.server --http
 """
 
+import json
 import sys
+import time
 
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -53,13 +55,42 @@ mcp = MCPServer(
 )
 
 
+def _log_call(tool: str, outcome: str, **extra: object) -> None:
+    """One structured line per real (metered) tool call, so it's answerable
+    later whether a given signup ever had a working call - not just whether
+    a key was issued. Captured automatically by systemd/journald, same as
+    every other log line this process already emits. Only logs when there's
+    a real access token (hosted transport, real customer) - stdio/local-dev
+    calls are unmetered and untracked, same scope as the usage guard.
+    """
+    token = get_access_token()
+    if token is None:
+        return
+    print(json.dumps({
+        "ts": time.time(),
+        "client_id": token.client_id,
+        "tool": tool,
+        "outcome": outcome,
+        **extra,
+    }), flush=True)
+
+
 def _guard_balance() -> str | None:
     try:
         balance = dfs.read_balance()
-    except dfs.DataForSEOError as e:
-        return f"Visibility data provider unavailable: {e}"
+    except dfs.DataForSEOError:
+        return (
+            "Visibility data provider temporarily unavailable. Try again in a "
+            "few minutes - if it persists, contact support@vantagemcp.dev."
+        )
     if balance < MIN_BALANCE_USD:
-        return f"Visibility check temporarily unavailable (provider balance ${balance:.2f} below minimum)."
+        # Deliberately doesn't include the actual balance figure in a
+        # user-facing message - that's internal operational state, not
+        # something the caller needs to see to know what to do next.
+        return (
+            "Visibility check temporarily unavailable. Try again shortly - "
+            "if it persists, contact support@vantagemcp.dev."
+        )
     return None
 
 
@@ -92,15 +123,41 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
         platform: one of "chat_gpt", "perplexity", "gemini". Defaults to chat_gpt.
     """
     if err := _guard_usage(10):
+        _log_call("check_ai_visibility", "quota_denied")
         return {"error": err}
     if err := _guard_balance():
+        _log_call("check_ai_visibility", "balance_denied")
         return {"error": err}
-    mentions = dfs.domain_mentions(domain=domain, platform=platform)
+    try:
+        mentions = dfs.domain_mentions(domain=domain, platform=platform)
+    except dfs.DataForSEOError:
+        _log_call("check_ai_visibility", "provider_error")
+        return {
+            "error": (
+                "Visibility data provider had a transient error on this "
+                "request. Try again - if it keeps failing for this domain/"
+                "platform, contact support@vantagemcp.dev."
+            )
+        }
+    if mentions is None:
+        # domain_mentions() returns None when the provider's response
+        # shape was unexpected, not when it confirmed zero mentions -
+        # those are different answers and shouldn't look the same.
+        _log_call("check_ai_visibility", "unparseable_response")
+        return {
+            "error": (
+                "Couldn't determine visibility for this domain/platform "
+                "(the provider's response wasn't in the expected shape). "
+                "Not the same as confirmed-zero-mentions - try again, or "
+                "contact support@vantagemcp.dev if it persists."
+            )
+        }
+    _log_call("check_ai_visibility", "success")
     return {
         "domain": domain,
         "platform": platform,
         "mentions_found": mentions,
-        "visible": bool(mentions and mentions > 0),
+        "visible": mentions > 0,
     }
 
 
@@ -117,14 +174,27 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: s
         compare_domain: optional bare domain to flag if present in the results.
     """
     if err := _guard_usage(10):
+        _log_call("citation_leaders", "quota_denied")
         return {"error": err}
     if err := _guard_balance():
+        _log_call("citation_leaders", "balance_denied")
         return {"error": err}
-    result = dfs.citation_leaders(keyword=keyword, platform=platform)
+    try:
+        result = dfs.citation_leaders(keyword=keyword, platform=platform)
+    except dfs.DataForSEOError:
+        _log_call("citation_leaders", "provider_error")
+        return {
+            "error": (
+                "Visibility data provider had a transient error on this "
+                "request. Try again - if it keeps failing for this keyword/"
+                "platform, contact support@vantagemcp.dev."
+            )
+        }
     if compare_domain:
         result["compare_domain_present"] = any(
             compare_domain in (d.get("domain") or "") for d in result.get("top_domains", [])
         )
+    _log_call("citation_leaders", "error" if result.get("error") else "success")
     return result
 
 
@@ -140,10 +210,24 @@ def citation_structure(keyword: str) -> dict:
         keyword: the topic/query to analyze, e.g. "how to reduce churn".
     """
     if err := _guard_usage(1):
+        _log_call("citation_structure", "quota_denied")
         return {"error": err}
     if err := _guard_balance():
+        _log_call("citation_structure", "balance_denied")
         return {"error": err}
-    return dfs.citation_structure(keyword=keyword)
+    try:
+        result = dfs.citation_structure(keyword=keyword)
+    except dfs.DataForSEOError:
+        _log_call("citation_structure", "provider_error")
+        return {
+            "error": (
+                "Visibility data provider had a transient error on this "
+                "request. Try again - if it keeps failing for this keyword, "
+                "contact support@vantagemcp.dev."
+            )
+        }
+    _log_call("citation_structure", "error" if result.get("error") else "success")
+    return result
 
 
 @mcp.tool()
@@ -160,24 +244,48 @@ def citation_structure_batch(keywords: list[str]) -> dict:
             "churn rate benchmarks", "reduce customer churn saas"]. Max 10.
     """
     if not keywords:
-        return {"error": "keywords list is empty."}
+        return {
+            "error": (
+                "keywords list is empty - pass at least one topic/query to "
+                "analyze, e.g. [\"how to reduce churn\"]."
+            )
+        }
     if len(keywords) > 10:
-        return {"error": f"Max 10 keywords per batch call, got {len(keywords)}."}
+        return {
+            "error": (
+                f"Max 10 keywords per batch call, got {len(keywords)}. Split "
+                "into multiple calls, or use citation_structure for a single "
+                "topic."
+            )
+        }
     if err := _guard_balance():
+        _log_call("citation_structure_batch", "balance_denied", keyword_count=len(keywords))
         return {"error": err}
 
     results = []
     for kw in keywords:
         if err := _guard_usage(1):
+            _log_call("citation_structure_batch", "quota_denied", keyword=kw)
             results.append({"keyword": kw, "error": err})
             continue
         try:
-            results.append(dfs.citation_structure(keyword=kw))
-        except dfs.DataForSEOError as e:
+            result = dfs.citation_structure(keyword=kw)
+        except dfs.DataForSEOError:
             # A per-keyword provider error must not sink the whole batch -
             # this call already consumed one unit of usage above, so the
             # keyword still needs a result entry, just one marked failed.
-            results.append({"keyword": kw, "error": str(e)})
+            _log_call("citation_structure_batch", "provider_error", keyword=kw)
+            results.append({
+                "keyword": kw,
+                "error": (
+                    "Visibility data provider had a transient error on this "
+                    "keyword. The rest of the batch still completed - retry "
+                    "just this keyword if you need it."
+                ),
+            })
+            continue
+        _log_call("citation_structure_batch", "error" if result.get("error") else "success", keyword=kw)
+        results.append(result)
 
     analyzed = [r for r in results if "error" not in r]
     summary = {
