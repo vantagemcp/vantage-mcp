@@ -1,5 +1,7 @@
 # Vantage
 
+[![vantage-mcp MCP server](https://glama.ai/mcp/servers/vantagemcp/vantage-mcp/badges/score.svg)](https://glama.ai/mcp/servers/vantagemcp/vantage-mcp)
+
 Know if AI actually cites you.
 
 Vantage is an MCP server that checks whether ChatGPT, Perplexity, and Gemini cite your brand, callable directly from Claude Code, Cursor, or any MCP client. No dashboard to interpret, just a straight answer.
