@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-08-21
+
+### Changed (BREAKING)
+- Renamed `citation_leaders` -> `find_citation_leaders`. Glama's naming-consistency check flagged it as the only tool without a verb prefix, now that `citation_structure`(`_batch`) are `analyze_*`. Anyone with the old name in an MCP client config needs to update it - there is no alias/fallback for the old name.
+
+### Fixed
+- Two stale tool-count references (a code comment claiming "4 tools" and a README line claiming "three tools") - both left over from before `analyze_citation_trend` brought the count to 5.
+
 ## [1.3.1] - 2026-08-21
 
 ### Changed

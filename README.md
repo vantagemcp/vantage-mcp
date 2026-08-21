@@ -33,7 +33,7 @@ Get a free API key (3 checks/month, no card required) at [vantagemcp.dev](https:
 Is a domain cited at all, on a given AI platform.
 > "Does ChatGPT know about us?"
 
-### `citation_leaders`
+### `find_citation_leaders`
 Who dominates AI-answer citations for a topic, and whether a domain is among them.
 > "Who's winning AI search for this?"
 
@@ -52,7 +52,7 @@ Same as `analyze_citation_structure`, across up to 10 related topics in one call
 ## Example
 
 ```
-> agent calls citation_leaders(
+> agent calls find_citation_leaders(
   keyword: "best mood tracker app",
   platform: "chat_gpt"
 )
@@ -73,7 +73,7 @@ Same as `analyze_citation_structure`, across up to 10 related topics in one call
 
 ## Running your own instance
 
-This repo is the MCP server itself: three tools, API-key auth, usage metering. Billing and account provisioning are a separate internal service, not included here.
+This repo is the MCP server itself: five tools, API-key auth, usage metering. Billing and account provisioning are a separate internal service, not included here.
 
 ```bash
 uv pip install -e .

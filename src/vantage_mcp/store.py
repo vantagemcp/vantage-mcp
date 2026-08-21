@@ -17,7 +17,7 @@ from pathlib import Path
 DB_PATH = Path(__file__).parent / "vantage.db"
 
 # Cost-units per billing period (calendar month), not raw call counts.
-# check_ai_visibility/citation_leaders cost 10 units/call (DataForSEO
+# check_ai_visibility/find_citation_leaders cost 10 units/call (DataForSEO
 # COGS ~$0.10-0.15/call), analyze_citation_structure(_batch) and
 # analyze_citation_trend cost 1 unit/call (COGS ~$0.004/call and $0/call
 # respectively). Limits are the old call-based limits x10, so

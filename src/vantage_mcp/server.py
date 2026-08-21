@@ -28,9 +28,9 @@ MIN_BALANCE_USD = 1.0  # same hard-stop guardrail as the source pipeline
 BASE_URL = "https://vantagemcp.dev"
 DOMAIN = "vantagemcp.dev"
 
-# All 4 tools share this exact profile: pure reads against a third-party
+# All 5 tools share this exact profile: pure reads against a third-party
 # data provider, no writes, safe to retry, results depend on external
-# (non-deterministic over time) data. One shared constant so the 4
+# (non-deterministic over time) data. One shared constant so the 5
 # @mcp.tool() calls below don't repeat identical annotation blocks.
 READ_ONLY_EXTERNAL = ToolAnnotations(
     read_only_hint=True,
@@ -40,7 +40,7 @@ READ_ONLY_EXTERNAL = ToolAnnotations(
 )
 
 # DataForSEO's llm_mentions endpoint family (what check_ai_visibility and
-# citation_leaders both call) only ever supports these two - confirmed
+# find_citation_leaders both call) only ever supports these two - confirmed
 # directly against their API docs for target_metrics/live and top_domains/
 # live. Perplexity and Gemini were never real: this project's own docs
 # and descriptions claimed them from day one, but DataForSEO would either
@@ -157,7 +157,7 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
     the domain was cited in the provider's tracked answers for this
     platform), "visible" (bool - true if mentions_found > 0)}.
 
-    Use citation_leaders instead if you want a ranked list of who's
+    Use find_citation_leaders instead if you want a ranked list of who's
     winning for a topic rather than one domain's own count. Use
     analyze_citation_trend instead if you want to see this count change
     over time rather than right now.
@@ -211,7 +211,7 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
-def citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: str | None = None) -> dict:
+def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: str | None = None) -> dict:
     """Find which domains dominate AI-answer citations for a topic/keyword,
     and optionally check whether a specific domain shows up among them.
     Use this to answer 'who's winning AI search for this topic' or
@@ -236,18 +236,18 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: s
         compare_domain: optional bare domain to flag if present in the results.
     """
     if err := _guard_platform(platform):
-        _log_call("citation_leaders", "invalid_platform")
+        _log_call("find_citation_leaders", "invalid_platform")
         return {"error": err}
     if err := _guard_usage(10):
-        _log_call("citation_leaders", "quota_denied")
+        _log_call("find_citation_leaders", "quota_denied")
         return {"error": err}
     if err := _guard_balance():
-        _log_call("citation_leaders", "balance_denied")
+        _log_call("find_citation_leaders", "balance_denied")
         return {"error": err}
     try:
         result = dfs.citation_leaders(keyword=keyword, platform=platform)
     except dfs.DataForSEOError:
-        _log_call("citation_leaders", "provider_error")
+        _log_call("find_citation_leaders", "provider_error")
         return {
             "error": (
                 "Visibility data provider had a transient error on this "
@@ -259,7 +259,7 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: s
         result["compare_domain_present"] = any(
             compare_domain in (d.get("domain") or "") for d in result.get("top_domains", [])
         )
-    _log_call("citation_leaders", "error" if result.get("error") else "success")
+    _log_call("find_citation_leaders", "error" if result.get("error") else "success")
     return result
 
 
