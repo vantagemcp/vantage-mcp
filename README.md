@@ -4,7 +4,7 @@
 
 Know if AI actually cites you.
 
-Vantage is an MCP server that checks whether ChatGPT, Perplexity, and Gemini cite your brand, callable directly from Claude Code, Cursor, or any MCP client. No dashboard to interpret, just a straight answer.
+Vantage is an MCP server that checks whether ChatGPT and Google's AI Overview cite your brand, callable directly from Claude Code, Cursor, or any MCP client. No dashboard to interpret, just a straight answer.
 
 Published on the [Official MCP Registry](https://registry.modelcontextprotocol.io/) under the domain-verified namespace `dev.vantagemcp/vantage`.
 

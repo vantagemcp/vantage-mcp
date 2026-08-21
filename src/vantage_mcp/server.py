@@ -1,5 +1,5 @@
 """Vantage: check how visible a brand/domain is inside AI answer
-engines (ChatGPT, Perplexity, Gemini) directly from an agent session.
+engines (ChatGPT, Google AI Overview) directly from an agent session.
 
 Run locally over stdio for testing (unauthenticated - trusted local
 dev, metering is skipped entirely in this mode):
@@ -39,6 +39,25 @@ READ_ONLY_EXTERNAL = ToolAnnotations(
     open_world_hint=True,
 )
 
+# DataForSEO's llm_mentions endpoint family (what check_ai_visibility and
+# citation_leaders both call) only ever supports these two - confirmed
+# directly against their API docs for target_metrics/live and top_domains/
+# live. Perplexity and Gemini were never real: this project's own docs
+# and descriptions claimed them from day one, but DataForSEO would either
+# error or silently mishandle the request - nobody had actually hit it
+# yet (checked the real call logs), but it was only a matter of time.
+VALID_PLATFORMS = {"chat_gpt", "google"}
+
+
+def _guard_platform(platform: str) -> str | None:
+    if platform not in VALID_PLATFORMS:
+        return (
+            f'"{platform}" is not a supported platform. This check only '
+            'covers "chat_gpt" and "google" (Google\'s AI Overview) right '
+            "now - Perplexity and Gemini aren't available here."
+        )
+    return None
+
 # The SDK's DNS-rebinding protection validates the Host/Origin headers
 # against an explicit allowlist - leaving it unconfigured meant an empty
 # allowed_hosts list, which silently rejects every real request with a
@@ -54,7 +73,7 @@ mcp = MCPServer(
     name="vantage",
     instructions=(
         "Checks whether a brand or domain is cited inside AI answer engines "
-        "(ChatGPT, Perplexity, Gemini) and how the winning AI-generated answer "
+        "(ChatGPT, Google AI Overview) and how the winning AI-generated answer "
         "for a given topic is structured. Use this when a user asks things like "
         "'does ChatGPT know about my product', 'who gets cited for this keyword "
         "in AI search', or 'what does a winning AI answer look like for X'."
@@ -127,7 +146,7 @@ def _guard_usage(cost: int) -> str | None:
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
     """Check how many times a domain is cited in AI-generated answers on a
-    given AI platform (chat_gpt, perplexity, gemini). Use this to answer
+    given AI platform (chat_gpt, google). Use this to answer
     'is my brand/domain visible in AI search' or 'does ChatGPT know about us'.
 
     Read-only: no side effects, safe to retry. Costs 10 quota units/call
@@ -142,8 +161,13 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
 
     Args:
         domain: bare domain to check, e.g. "example.com" (no https://, no www).
-        platform: one of "chat_gpt", "perplexity", "gemini". Defaults to chat_gpt.
+        platform: "chat_gpt" or "google" (Google's AI Overview). Defaults
+            to chat_gpt. Perplexity and Gemini aren't available - the
+            underlying data provider doesn't cover them for this check.
     """
+    if err := _guard_platform(platform):
+        _log_call("check_ai_visibility", "invalid_platform")
+        return {"error": err}
     if err := _guard_usage(10):
         _log_call("check_ai_visibility", "quota_denied")
         return {"error": err}
@@ -203,9 +227,14 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: s
 
     Args:
         keyword: the topic/query to check, e.g. "best project management tool".
-        platform: one of "chat_gpt", "perplexity", "gemini". Defaults to chat_gpt.
+        platform: "chat_gpt" or "google" (Google's AI Overview). Defaults
+            to chat_gpt. Perplexity and Gemini aren't available - the
+            underlying data provider doesn't cover them for this check.
         compare_domain: optional bare domain to flag if present in the results.
     """
+    if err := _guard_platform(platform):
+        _log_call("citation_leaders", "invalid_platform")
+        return {"error": err}
     if err := _guard_usage(10):
         _log_call("citation_leaders", "quota_denied")
         return {"error": err}

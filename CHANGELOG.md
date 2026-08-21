@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-08-21
+
+### Fixed
+- `check_ai_visibility` and `citation_leaders` claimed `platform` accepted "perplexity" and "gemini" since v1.0.0 - it never did. The underlying DataForSEO endpoints only support `chat_gpt` and `google` (Google's AI Overview); requesting anything else would have errored or silently returned nothing meaningful. Both tools now validate `platform` up front and return a clear error naming the two real options instead of passing a bad value through. Docs, descriptions, and the README updated to match reality.
+
 ## [1.2.0] - 2026-08-21
 
 ### Changed (BREAKING)
