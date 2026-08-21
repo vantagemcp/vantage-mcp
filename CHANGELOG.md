@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-08-21
+
+### Added
+- `analyze_citation_trend(domain, platform, months)`: month-by-month AI-citation counts for a domain since DataForSEO's history began (2025-08-01), plus a simple up/down/flat trend summary. Costs 1 quota unit/call - DataForSEO's historical endpoint has priced at $0 on every real call made building this, unlike the two per-lookup tools. A month with no tracked citations normalizes to an explicit 0 rather than being silently omitted (found calling the endpoint live: it drops the whole "metrics" object for a zero month instead of returning zeros).
+
 ## [1.2.1] - 2026-08-21
 
 ### Fixed

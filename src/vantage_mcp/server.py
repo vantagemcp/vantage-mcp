@@ -73,10 +73,11 @@ mcp = MCPServer(
     name="vantage",
     instructions=(
         "Checks whether a brand or domain is cited inside AI answer engines "
-        "(ChatGPT, Google AI Overview) and how the winning AI-generated answer "
-        "for a given topic is structured. Use this when a user asks things like "
-        "'does ChatGPT know about my product', 'who gets cited for this keyword "
-        "in AI search', or 'what does a winning AI answer look like for X'."
+        "(ChatGPT, Google AI Overview), how that's changed over time, and how "
+        "the winning AI-generated answer for a given topic is structured. Use "
+        "this when a user asks things like 'does ChatGPT know about my product', "
+        "'who gets cited for this keyword in AI search', 'is our AI visibility "
+        "growing', or 'what does a winning AI answer look like for X'."
     ),
     token_verifier=VantageTokenVerifier(),
     auth=AuthSettings(
@@ -157,7 +158,9 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
     platform), "visible" (bool - true if mentions_found > 0)}.
 
     Use citation_leaders instead if you want a ranked list of who's
-    winning for a topic rather than one domain's own count.
+    winning for a topic rather than one domain's own count. Use
+    analyze_citation_trend instead if you want to see this count change
+    over time rather than right now.
 
     Args:
         domain: bare domain to check, e.g. "example.com" (no https://, no www).
@@ -258,6 +261,73 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: s
         )
     _log_call("citation_leaders", "error" if result.get("error") else "success")
     return result
+
+
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int = 6) -> dict:
+    """Track how a domain's AI-citation count has moved month over month,
+    so you can see whether visibility is growing or fading instead of
+    only ever checking a single point in time. Use this to answer 'is our
+    AI visibility improving' or 'did that content push actually move the
+    needle'.
+
+    Read-only: no side effects, safe to retry. Costs 1 quota unit/call
+    (free tier: 3 checks/month total across all tools) - DataForSEO's
+    historical endpoint has priced at $0 on every real call made
+    verifying this, unlike check_ai_visibility/citation_leaders above.
+
+    Returns: {"domain", "platform", "months" (list of {"year", "month",
+    "mentions" (int, 0 for a month with no tracked citations - a real
+    measured zero, not a gap), "ai_search_volume"}, oldest to newest),
+    "trend": {"direction" ("up"/"down"/"flat"/"no_data"),
+    "earliest_mentions", "latest_mentions"}}.
+
+    Use check_ai_visibility instead if you only need the current count,
+    not how it's changed over time.
+
+    Args:
+        domain: bare domain to check, e.g. "example.com" (no https://, no www).
+        platform: "chat_gpt" or "google" (Google's AI Overview). Defaults
+            to chat_gpt. Perplexity and Gemini aren't available - the
+            underlying data provider doesn't cover them for this check.
+        months: how many recent months of history to return. Defaults to
+            6, capped at 13 - DataForSEO's historical data only goes back
+            to 2025-08-01.
+    """
+    if err := _guard_platform(platform):
+        _log_call("analyze_citation_trend", "invalid_platform")
+        return {"error": err}
+    if err := _guard_usage(1):
+        _log_call("analyze_citation_trend", "quota_denied")
+        return {"error": err}
+    if err := _guard_balance():
+        _log_call("analyze_citation_trend", "balance_denied")
+        return {"error": err}
+    try:
+        result = dfs.citation_trend(domain=domain, platform=platform)
+    except dfs.DataForSEOError:
+        _log_call("analyze_citation_trend", "provider_error")
+        return {
+            "error": (
+                "Visibility data provider had a transient error on this "
+                "request. Try again - if it keeps failing for this domain/"
+                "platform, contact support@vantagemcp.dev."
+            )
+        }
+    if result.get("error"):
+        _log_call("analyze_citation_trend", "error")
+        return result
+
+    window = result.get("months", [])[-max(1, min(months, 13)):]
+    if not window:
+        trend = {"direction": "no_data"}
+    else:
+        earliest, latest = window[0]["mentions"], window[-1]["mentions"]
+        direction = "flat" if latest == earliest else ("up" if latest > earliest else "down")
+        trend = {"direction": direction, "earliest_mentions": earliest, "latest_mentions": latest}
+
+    _log_call("analyze_citation_trend", "success")
+    return {"domain": domain, "platform": platform, "months": window, "trend": trend}
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)

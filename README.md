@@ -37,6 +37,10 @@ Is a domain cited at all, on a given AI platform.
 Who dominates AI-answer citations for a topic, and whether a domain is among them.
 > "Who's winning AI search for this?"
 
+### `analyze_citation_trend`
+Month-by-month mention counts for a domain, so you can see whether visibility is growing or fading.
+> "Is our AI visibility improving?"
+
 ### `analyze_citation_structure`
 How the winning AI answer for a topic is actually shaped: list-led, sources cited, opening length.
 > "What does a winning answer look like?"

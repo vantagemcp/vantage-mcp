@@ -91,6 +91,34 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", limit: int = 5) -
         return {"keyword": keyword, "platform": platform, "top_domains": [], "error": str(e)}
 
 
+def citation_trend(domain: str, platform: str = "chat_gpt") -> dict:
+    """Month-by-month mention counts for a domain since DataForSEO's
+    history began (2025-08-01), oldest to newest. Priced at $0/call on
+    every real call made verifying this - unlike domain_mentions/
+    citation_leaders above, which run ~$0.10-0.15/call. A month with no
+    tracked mentions comes back with no "metrics" key at all rather than
+    zeros - real behavior found calling this live, not assumed from the
+    docs - so that gets normalized to an explicit 0 here rather than
+    silently dropped."""
+    body = [{"target": [{"domain": domain}], "platform": platform}]
+    res = _call("ai_optimization/llm_mentions/historical/live", body)
+    try:
+        items = res["tasks"][0]["result"][0]["items"]
+    except Exception as e:
+        return {"domain": domain, "platform": platform, "months": [], "error": str(e)}
+    months = [
+        {
+            "year": it["year"],
+            "month": it["month"],
+            "mentions": (it.get("metrics") or {}).get("mentions", 0),
+            "ai_search_volume": (it.get("metrics") or {}).get("ai_search_volume", 0),
+        }
+        for it in items
+    ]
+    months.sort(key=lambda m: (m["year"], m["month"]))
+    return {"domain": domain, "platform": platform, "months": months}
+
+
 def citation_structure(keyword: str) -> dict:
     """Structural shape of the AI-generated answer actually cited for
     this keyword: does it lead with a list, how long is the opening,
