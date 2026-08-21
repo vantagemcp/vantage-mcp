@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-08-21
+
+### Changed
+- Trimmed `analyze_citation_trend`'s docstring: dropped a backstory clause about DataForSEO's historical endpoint pricing at $0 that duplicated context already covered elsewhere and added nothing the calling agent needs. Now matches the concise cost-line pattern used by the other three tools.
+
 ## [1.3.0] - 2026-08-21
 
 ### Added

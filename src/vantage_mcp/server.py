@@ -272,9 +272,7 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
     needle'.
 
     Read-only: no side effects, safe to retry. Costs 1 quota unit/call
-    (free tier: 3 checks/month total across all tools) - DataForSEO's
-    historical endpoint has priced at $0 on every real call made
-    verifying this, unlike check_ai_visibility/citation_leaders above.
+    (free tier: 3 checks/month total across all tools).
 
     Returns: {"domain", "platform", "months" (list of {"year", "month",
     "mentions" (int, 0 for a month with no tracked citations - a real
