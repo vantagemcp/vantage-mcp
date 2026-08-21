@@ -9,6 +9,7 @@ Auth: DATAFORSEO_USERNAME / DATAFORSEO_PASSWORD from env.
 import base64
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -119,6 +120,27 @@ def citation_trend(domain: str, platform: str = "chat_gpt") -> dict:
     return {"domain": domain, "platform": platform, "months": months}
 
 
+_LIST_RE = re.compile(r"^\s*(?:[-*]|\d+\.)\s+", re.MULTILINE)
+
+
+def _parse_opening(markdown: str) -> dict:
+    """Shared structural read of a markdown document's opening, used
+    both for the AI-cited winning answer (citation_structure) and for
+    a caller's own page (page_structure), so the two are computed the
+    exact same way and stay directly comparable."""
+    list_match = _LIST_RE.search(markdown)
+    cutoff = list_match.start() if list_match else len(markdown)
+    para_end = markdown.find("\n\n")
+    if para_end != -1 and para_end < cutoff:
+        cutoff = para_end
+    opening = markdown[:cutoff].strip()
+    return {
+        "leads_with_list": bool(_LIST_RE.match(markdown.lstrip())),
+        "opening_word_count": len(opening.split()),
+        "opening_has_number": bool(re.search(r"\d", opening)),
+    }
+
+
 def citation_structure(keyword: str) -> dict:
     """Structural shape of the AI-generated answer actually cited for
     this keyword: does it lead with a list, how long is the opening,
@@ -132,24 +154,72 @@ def citation_structure(keyword: str) -> dict:
         result = task["result"][0]
         markdown = result.get("markdown") or ""
         sources = result.get("sources") or []
-
-        import re
-
-        list_re = re.compile(r"^\s*(?:[-*]|\d+\.)\s+", re.MULTILINE)
-        list_match = list_re.search(markdown)
-        cutoff = list_match.start() if list_match else len(markdown)
-        para_end = markdown.find("\n\n")
-        if para_end != -1 and para_end < cutoff:
-            cutoff = para_end
-        opening = markdown[:cutoff].strip()
-
         return {
             "keyword": keyword,
-            "leads_with_list": bool(list_re.match(markdown.lstrip())),
-            "opening_word_count": len(opening.split()),
-            "opening_has_number": bool(re.search(r"\d", opening)),
+            **_parse_opening(markdown),
             "num_sources_cited": len(sources),
             "source_domains": [s.get("domain") for s in sources][:10],
         }
     except Exception as e:
         return {"keyword": keyword, "error": str(e)}
+
+
+def page_structure(url: str) -> dict:
+    """Same structural read as citation_structure, applied to your own
+    page instead of the AI-cited answer, so the two are directly
+    comparable. Outbound links stand in for "sources cited" since a
+    normal webpage has no DataForSEO-supplied source list.
+    ~$0.003/call (on_page/content_parsing, no JS rendering)."""
+    body = [{"url": url, "markdown_view": True}]
+    res = _call("on_page/content_parsing/live", body, timeout=60)
+    try:
+        task = res["tasks"][0]
+        if task.get("status_code") != 20000:
+            return {"url": url, "error": task.get("status_message")}
+        item = task["result"][0]["items"][0]
+        if item.get("status_code") and item["status_code"] >= 400:
+            return {"url": url, "error": f"page returned HTTP {item['status_code']}"}
+        markdown = item.get("page_as_markdown") or ""
+        links = re.findall(r"\[[^\]]*\]\((https?://[^)\s]+)\)", markdown)
+        domains = []
+        for link in links:
+            domain = link.split("/")[2] if link.count("/") >= 2 else link
+            if domain not in domains:
+                domains.append(domain)
+        return {
+            "url": url,
+            **_parse_opening(markdown),
+            "num_links_out": len(links),
+            "linked_domains": domains[:10],
+        }
+    except Exception as e:
+        return {"url": url, "error": str(e)}
+
+
+def citation_gap(keyword: str, your_url: str) -> dict:
+    """Diff your own page's structure against the winning AI-cited
+    answer's structure for the same keyword, as concrete gaps to close
+    rather than two separate reports read side by side."""
+    winning = citation_structure(keyword)
+    if winning.get("error"):
+        return {"keyword": keyword, "your_url": your_url, "error": f"couldn't analyze the winning answer: {winning['error']}"}
+    yours = page_structure(your_url)
+    if yours.get("error"):
+        return {"keyword": keyword, "your_url": your_url, "error": f"couldn't fetch/parse your_url: {yours['error']}"}
+
+    gaps = []
+    if winning["leads_with_list"] and not yours["leads_with_list"]:
+        gaps.append("Winning answer leads with a list; your page opens with a paragraph.")
+    if winning["opening_word_count"] > 0 and yours["opening_word_count"] > winning["opening_word_count"] * 2:
+        gaps.append(
+            f"Winning opening is {winning['opening_word_count']} words before the point; "
+            f"yours is {yours['opening_word_count']}."
+        )
+    if winning["opening_has_number"] and not yours["opening_has_number"]:
+        gaps.append("Winning opening states a number/stat up front; yours doesn't.")
+    if winning["num_sources_cited"] > yours["num_links_out"]:
+        gaps.append(
+            f"Winning answer cites {winning['num_sources_cited']} sources; "
+            f"your page links out to {yours['num_links_out']}."
+        )
+    return {"keyword": keyword, "your_url": your_url, "winning": winning, "yours": yours, "gaps": gaps}

@@ -49,6 +49,10 @@ How the winning AI answer for a topic is actually shaped: list-led, sources cite
 Same as `analyze_citation_structure`, across up to 10 related topics in one call, for content planning across a cluster.
 > "What do winning answers look like across this whole topic cluster?"
 
+### `analyze_citation_gap`
+Diffs your own page's structure against the winning AI-cited answer for the same keyword, so you get concrete gaps to close instead of just the winner's shape.
+> "What should I actually change on this page to get cited?"
+
 ## Example
 
 ```
@@ -73,7 +77,7 @@ Same as `analyze_citation_structure`, across up to 10 related topics in one call
 
 ## Running your own instance
 
-This repo is the MCP server itself: five tools, API-key auth, usage metering. Billing and account provisioning are a separate internal service, not included here.
+This repo is the MCP server itself: API-key auth, usage metering, one tool per read (see Tools above). Billing and account provisioning are a separate internal service, not included here.
 
 ```bash
 uv pip install -e .

@@ -28,10 +28,10 @@ MIN_BALANCE_USD = 1.0  # same hard-stop guardrail as the source pipeline
 BASE_URL = "https://vantagemcp.dev"
 DOMAIN = "vantagemcp.dev"
 
-# All 5 tools share this exact profile: pure reads against a third-party
-# data provider, no writes, safe to retry, results depend on external
-# (non-deterministic over time) data. One shared constant so the 5
-# @mcp.tool() calls below don't repeat identical annotation blocks.
+# Every tool below shares this exact profile: pure reads against a
+# third-party data provider, no writes, safe to retry, results depend
+# on external (non-deterministic over time) data. One shared constant
+# so each @mcp.tool() call doesn't repeat identical annotation blocks.
 READ_ONLY_EXTERNAL = ToolAnnotations(
     read_only_hint=True,
     destructive_hint=False,
@@ -344,7 +344,9 @@ def analyze_citation_structure(keyword: str) -> dict:
     "source_domains" (list of up to 10 domain strings)}.
 
     Use analyze_citation_structure_batch instead if you need this for more than
-    one keyword - one call per topic here adds up fast for a cluster.
+    one keyword - one call per topic here adds up fast for a cluster. Use
+    analyze_citation_gap instead if you have your own page for this
+    keyword and want the gap to the winner, not just the winner's shape.
 
     Args:
         keyword: the topic/query to analyze, e.g. "how to reduce churn".
@@ -448,6 +450,53 @@ def analyze_citation_structure_batch(keywords: list[str]) -> dict:
         ),
     }
     return {"results": results, "summary": summary}
+
+
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+def analyze_citation_gap(keyword: str, your_url: str) -> dict:
+    """Compare your own page's structure against the AI-generated answer
+    actually cited for this keyword, and return concrete gaps to close
+    instead of just describing the winner. Use this to answer 'what
+    should I change on this page to get cited' rather than only 'what
+    does a winning answer look like'.
+
+    Read-only: no side effects, safe to retry. Costs 1 quota unit/call
+    (free tier: 3 checks/month total across all tools).
+
+    Returns: {"keyword", "your_url", "winning" (structure of the
+    AI-cited answer, same shape as analyze_citation_structure), "yours"
+    (same structure computed for your_url, "num_links_out"/
+    "linked_domains" standing in for source count), "gaps" (list of
+    plain-English differences worth acting on)}, or {"error"} if either
+    side couldn't be fetched/parsed.
+
+    Use analyze_citation_structure instead if you just want the winning
+    answer's shape, not a comparison against your own page.
+
+    Args:
+        keyword: the topic/query to check, e.g. "best project management tool".
+        your_url: full URL of your own page to compare, e.g.
+            "https://example.com/best-project-management-tools".
+    """
+    if err := _guard_usage(1):
+        _log_call("analyze_citation_gap", "quota_denied")
+        return {"error": err}
+    if err := _guard_balance():
+        _log_call("analyze_citation_gap", "balance_denied")
+        return {"error": err}
+    try:
+        result = dfs.citation_gap(keyword=keyword, your_url=your_url)
+    except dfs.DataForSEOError:
+        _log_call("analyze_citation_gap", "provider_error")
+        return {
+            "error": (
+                "Visibility data provider had a transient error on this "
+                "request. Try again - if it keeps failing for this keyword/"
+                "URL, contact support@vantagemcp.dev."
+            )
+        }
+    _log_call("analyze_citation_gap", "error" if result.get("error") else "success")
+    return result
 
 
 def main() -> None:

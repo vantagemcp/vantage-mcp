@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-08-21
+
+### Added
+- `analyze_citation_gap(keyword, your_url)`: diffs your own page's structure against the AI-cited winning answer for the same keyword and returns concrete gaps to close (e.g. "winning answer cites 4 sources, your page links out to 0"), instead of only describing the winner like `analyze_citation_structure` does. Reuses that same structural parser against your page's content (fetched via DataForSEO's OnPage Content Parsing endpoint). Costs 1 quota unit/call.
+
 ## [1.4.0] - 2026-08-21
 
 ### Changed (BREAKING)
