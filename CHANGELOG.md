@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-08-21
+
+### Changed (BREAKING)
+- Renamed `citation_structure` -> `analyze_citation_structure` and `citation_structure_batch` -> `analyze_citation_structure_batch`. Glama's naming-consistency check flagged these two as the only tools with no verb, inconsistent with `check_ai_visibility`/`citation_leaders`. Anyone with the old names in an MCP client config needs to update them - there is no alias/fallback for the old names.
+
 ## [1.1.3] - 2026-08-21
 
 ### Changed

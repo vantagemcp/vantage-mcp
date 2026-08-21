@@ -18,7 +18,7 @@ DB_PATH = Path(__file__).parent / "vantage.db"
 
 # Cost-units per billing period (calendar month), not raw call counts.
 # check_ai_visibility/citation_leaders cost 10 units/call (DataForSEO
-# COGS ~$0.10-0.15/call), citation_structure(_batch) costs 1 unit/call
+# COGS ~$0.10-0.15/call), analyze_citation_structure(_batch) costs 1 unit/call
 # (COGS ~$0.004/call). Limits are the old call-based limits x10, so
 # worst-case cost exposure (all-expensive-calls) is unchanged from the
 # original per-tier caps - a generous free tier still doesn't lose

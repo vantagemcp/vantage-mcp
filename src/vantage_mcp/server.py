@@ -232,7 +232,7 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: s
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
-def citation_structure(keyword: str) -> dict:
+def analyze_citation_structure(keyword: str) -> dict:
     """Analyze the structural shape of the AI-generated answer actually
     cited for a keyword: does it lead with a list, how long is the opening
     passage, how many sources does it cite and from which domains. Use
@@ -246,22 +246,22 @@ def citation_structure(keyword: str) -> dict:
     (int), "opening_has_number" (bool), "num_sources_cited" (int),
     "source_domains" (list of up to 10 domain strings)}.
 
-    Use citation_structure_batch instead if you need this for more than
+    Use analyze_citation_structure_batch instead if you need this for more than
     one keyword - one call per topic here adds up fast for a cluster.
 
     Args:
         keyword: the topic/query to analyze, e.g. "how to reduce churn".
     """
     if err := _guard_usage(1):
-        _log_call("citation_structure", "quota_denied")
+        _log_call("analyze_citation_structure", "quota_denied")
         return {"error": err}
     if err := _guard_balance():
-        _log_call("citation_structure", "balance_denied")
+        _log_call("analyze_citation_structure", "balance_denied")
         return {"error": err}
     try:
         result = dfs.citation_structure(keyword=keyword)
     except dfs.DataForSEOError:
-        _log_call("citation_structure", "provider_error")
+        _log_call("analyze_citation_structure", "provider_error")
         return {
             "error": (
                 "Visibility data provider had a transient error on this "
@@ -269,17 +269,17 @@ def citation_structure(keyword: str) -> dict:
                 "contact support@vantagemcp.dev."
             )
         }
-    _log_call("citation_structure", "error" if result.get("error") else "success")
+    _log_call("analyze_citation_structure", "error" if result.get("error") else "success")
     return result
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
-def citation_structure_batch(keywords: list[str]) -> dict:
+def analyze_citation_structure_batch(keywords: list[str]) -> dict:
     """Analyze the structural shape of the winning AI answer across several
     related keywords/topics in one call: does each lead with a list, how
     long is the opening, how many sources it cites. Use this for content
     planning across a topic cluster, e.g. before writing several related
-    pieces meant to get cited, instead of calling citation_structure once
+    pieces meant to get cited, instead of calling analyze_citation_structure once
     per topic.
 
     Read-only: no side effects, safe to retry. Costs 1 quota unit per
@@ -288,7 +288,7 @@ def citation_structure_batch(keywords: list[str]) -> dict:
     that keyword's entry just carries an "error" field instead.
 
     Returns: {"results" (list, one {"keyword", ...same shape as
-    citation_structure, or "error"} per keyword, in the order given),
+    analyze_citation_structure, or "error"} per keyword, in the order given),
     "summary": {"topics_analyzed", "topics_requested", "list_led_count",
     "avg_sources_cited"}}.
 
@@ -307,18 +307,18 @@ def citation_structure_batch(keywords: list[str]) -> dict:
         return {
             "error": (
                 f"Max 10 keywords per batch call, got {len(keywords)}. Split "
-                "into multiple calls, or use citation_structure for a single "
+                "into multiple calls, or use analyze_citation_structure for a single "
                 "topic."
             )
         }
     if err := _guard_balance():
-        _log_call("citation_structure_batch", "balance_denied", keyword_count=len(keywords))
+        _log_call("analyze_citation_structure_batch", "balance_denied", keyword_count=len(keywords))
         return {"error": err}
 
     results = []
     for kw in keywords:
         if err := _guard_usage(1):
-            _log_call("citation_structure_batch", "quota_denied", keyword=kw)
+            _log_call("analyze_citation_structure_batch", "quota_denied", keyword=kw)
             results.append({"keyword": kw, "error": err})
             continue
         try:
@@ -327,7 +327,7 @@ def citation_structure_batch(keywords: list[str]) -> dict:
             # A per-keyword provider error must not sink the whole batch -
             # this call already consumed one unit of usage above, so the
             # keyword still needs a result entry, just one marked failed.
-            _log_call("citation_structure_batch", "provider_error", keyword=kw)
+            _log_call("analyze_citation_structure_batch", "provider_error", keyword=kw)
             results.append({
                 "keyword": kw,
                 "error": (
@@ -337,7 +337,7 @@ def citation_structure_batch(keywords: list[str]) -> dict:
                 ),
             })
             continue
-        _log_call("citation_structure_batch", "error" if result.get("error") else "success", keyword=kw)
+        _log_call("analyze_citation_structure_batch", "error" if result.get("error") else "success", keyword=kw)
         results.append(result)
 
     analyzed = [r for r in results if "error" not in r]

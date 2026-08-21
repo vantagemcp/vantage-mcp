@@ -37,12 +37,12 @@ Is a domain cited at all, on a given AI platform.
 Who dominates AI-answer citations for a topic, and whether a domain is among them.
 > "Who's winning AI search for this?"
 
-### `citation_structure`
+### `analyze_citation_structure`
 How the winning AI answer for a topic is actually shaped: list-led, sources cited, opening length.
 > "What does a winning answer look like?"
 
-### `citation_structure_batch`
-Same as `citation_structure`, across up to 10 related topics in one call, for content planning across a cluster.
+### `analyze_citation_structure_batch`
+Same as `analyze_citation_structure`, across up to 10 related topics in one call, for content planning across a cluster.
 > "What do winning answers look like across this whole topic cluster?"
 
 ## Example
