@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] - 2026-08-22
+
+### Fixed
+- The provider-balance check (`read_balance`) could raise a raw, uncaught `TypeError`/`KeyError` on a malformed response from DataForSEO's balance endpoint, bypassing the graceful "temporarily unavailable" fallback every other provider call already had. Now wrapped like every other client call, so a malformed response degrades the same way a provider error does.
+
 ## [1.5.0] - 2026-08-21
 
 ### Added

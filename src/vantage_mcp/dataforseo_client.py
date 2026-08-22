@@ -48,9 +48,14 @@ def read_balance() -> float:
     req = urllib.request.Request(
         f"{API}/appendix/user_data", method="GET", headers={"Authorization": _auth_header()}
     )
-    with urllib.request.urlopen(req, timeout=20) as r:
-        d = json.load(r)
-    return float(d["tasks"][0]["result"][0]["money"]["balance"])
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            d = json.load(r)
+        return float(d["tasks"][0]["result"][0]["money"]["balance"])
+    except urllib.error.HTTPError as e:
+        raise DataForSEOError(f"HTTP {e.code}: {e.read().decode()[:300]}") from e
+    except Exception as e:  # noqa: BLE001 - malformed/empty body, same as _call
+        raise DataForSEOError(str(e)) from e
 
 
 def _first_group_list(d: dict) -> list:
