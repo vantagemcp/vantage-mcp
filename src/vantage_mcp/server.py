@@ -87,24 +87,35 @@ mcp = MCPServer(
 )
 
 
+CALL_LOG_PATH = "/var/log/vantage/calls.jsonl"
+
+
 def _log_call(tool: str, outcome: str, **extra: object) -> None:
     """One structured line per real (metered) tool call, so it's answerable
     later whether a given signup ever had a working call - not just whether
     a key was issued. Captured automatically by systemd/journald, same as
-    every other log line this process already emits. Only logs when there's
-    a real access token (hosted transport, real customer) - stdio/local-dev
-    calls are unmetered and untracked, same scope as the usage guard.
+    every other log line this process already emits, and mirrored to a
+    plain file so an external tool-health check can read recent outcomes
+    without journal-read permissions. Only logs when there's a real access
+    token (hosted transport, real customer) - stdio/local-dev calls are
+    unmetered and untracked, same scope as the usage guard.
     """
     token = get_access_token()
     if token is None:
         return
-    print(json.dumps({
+    line = json.dumps({
         "ts": time.time(),
         "client_id": token.client_id,
         "tool": tool,
         "outcome": outcome,
         **extra,
-    }), flush=True)
+    })
+    print(line, flush=True)
+    try:
+        with open(CALL_LOG_PATH, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass  # the journald copy above is authoritative; this is a convenience mirror
 
 
 def _guard_balance() -> str | None:

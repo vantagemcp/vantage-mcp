@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.2] - 2026-08-22
+
+### Added
+- The structured call-outcome log is now also mirrored to a plain file (in addition to the existing journald capture), so an external health-check process can read recent outcomes without journal-read permissions.
+
 ## [1.5.1] - 2026-08-22
 
 ### Fixed
