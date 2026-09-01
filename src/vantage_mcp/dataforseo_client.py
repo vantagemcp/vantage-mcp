@@ -181,7 +181,10 @@ def page_structure(url: str) -> dict:
         task = res["tasks"][0]
         if task.get("status_code") != 20000:
             return {"url": url, "error": task.get("status_message")}
-        item = task["result"][0]["items"][0]
+        items = task["result"][0].get("items") or []
+        if not items:
+            return {"url": url, "error": "page had no parseable content (crawler found nothing to read)"}
+        item = items[0]
         if item.get("status_code") and item["status_code"] >= 400:
             return {"url": url, "error": f"page returned HTTP {item['status_code']}"}
         markdown = item.get("page_as_markdown") or ""
