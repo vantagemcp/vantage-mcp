@@ -95,10 +95,10 @@ def _log_call(tool: str, outcome: str, **extra: object) -> None:
     later whether a given signup ever had a working call - not just whether
     a key was issued. Captured automatically by systemd/journald, same as
     every other log line this process already emits, and mirrored to a
-    plain file so an external tool-health check can read recent outcomes
-    without journal-read permissions. Only logs when there's a real access
-    token (hosted transport, real customer) - stdio/local-dev calls are
-    unmetered and untracked, same scope as the usage guard.
+    plain file so the tool-health check can read recent outcomes without
+    journal-read permissions. Only logs when there's a real access token
+    (hosted transport, real customer) - stdio/local-dev calls are unmetered
+    and untracked, same scope as the usage guard.
     """
     token = get_access_token()
     if token is None:
