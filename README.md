@@ -6,6 +6,12 @@ Know if AI actually cites you.
 
 Vantage is an MCP server that checks whether ChatGPT and Google's AI Overview cite your brand, callable directly from Claude Code, Cursor, or any MCP client. No dashboard to interpret, just a straight answer.
 
+## Try it without installing anything
+
+[vantagemcp.dev/check](https://vantagemcp.dev/check) runs a real citation check with no account, no email and no card. Give it a keyword and it returns the measured shape of the answer ChatGPT actually cites for it: whether the answer opens with a list, how long the opening is, how many sources it cites, and which domains those are.
+
+Every answer keeps a permanent page, and they are all listed in [check/sitemap.xml](https://vantagemcp.dev/check/sitemap.xml).
+
 Published on the [Official MCP Registry](https://registry.modelcontextprotocol.io/) under the domain-verified namespace `dev.vantagemcp/vantage`.
 
 > **Not to be confused with:** [vantage.sh](https://www.vantage.sh), a cloud cost-management company with its own, unrelated MCP server also named Vantage. Different product, same name.
@@ -25,7 +31,7 @@ Add to your MCP client config:
 }
 ```
 
-Get a free API key (3 checks/month, no card required) at [vantagemcp.dev](https://vantagemcp.dev).
+Try it first with no account at all at [vantagemcp.dev/check](https://vantagemcp.dev/check), or get a free API key (3 checks/month, no card required) at [vantagemcp.dev](https://vantagemcp.dev).
 
 ## Tools
 

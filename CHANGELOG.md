@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.3] - 2026-09-05
+
+### Changed
+- No change to the MCP server or any tool. Version bumped so the Official MCP Registry listing, this repository and the published package all agree on one number.
+
+### Fixed
+- The Official MCP Registry listing described the server as covering Perplexity. It does not: `VALID_PLATFORMS` is `chat_gpt` and `google`, and the server rejects any other platform value. The listing has been republished with an accurate description, a complete sentence (the previous one was cut off mid-list), and a link to this repository.
+- `https://vantagemcp.dev/mcp` returns 401 with a `WWW-Authenticate` header advertising `resource_metadata`, and that URL previously returned 404, so a client following the pointer to find out how to authenticate reached a dead end. It now serves RFC 9728 protected-resource metadata.
+
 ## [1.5.2] - 2026-08-22
 
 ### Added
