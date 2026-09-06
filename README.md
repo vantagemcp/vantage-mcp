@@ -44,6 +44,10 @@ Costs 0 units - reads Vantage's own record, never calls the paid data provider.
 Is a domain cited at all, on a given AI platform.
 > "Does ChatGPT know about us?"
 
+### `check_prompt_coverage`
+Which of several prompts actually cite a specific domain, and which don't - up to 10 keywords in one call.
+> "Out of everything we care about, where do we already show up?"
+
 ### `find_citation_leaders`
 Who dominates AI-answer citations for a topic, and whether a domain is among them.
 > "Who's winning AI search for this?"

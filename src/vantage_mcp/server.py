@@ -161,6 +161,14 @@ def _guard_usage(cost: int) -> str | None:
     return None if allowed else reason
 
 
+def _normalize_domain(domain: str) -> str:
+    """Lowercase, stripped, no leading "www." - the exact-match key used
+    everywhere a domain from a customer is compared against a domain string
+    from the provider. Exact match, not substring: a substring check here
+    once let "notion.so" match "mynotion.so.example.com"."""
+    return (domain or "").strip().lower().removeprefix("www.")
+
+
 def _refund_usage(cost: int) -> None:
     """Hand back quota _guard_usage already charged for a call that came
     back unusable (a provider error, or a response we could not parse).
@@ -340,10 +348,10 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
             ),
         }
     if compare_domain:
-        cd = compare_domain.strip().lower().removeprefix("www.")
+        cd = _normalize_domain(compare_domain)
         rank = next(
             (i for i, d in enumerate(result.get("top_domains", []), start=1)
-             if (d.get("domain") or "").strip().lower().removeprefix("www.") == cd),
+             if _normalize_domain(d.get("domain") or "") == cd),
             None,
         )
         result["compare_domain_rank"] = rank
@@ -570,6 +578,119 @@ def analyze_citation_structure_batch(keywords: list[str]) -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
+def check_prompt_coverage(domain: str, keywords: list[str]) -> dict:
+    """Check which of several prompts/keywords actually cite a specific
+    domain, and which ones don't. This is usually the first real question
+    in an AI-answer-engine audit - not "what does a winning answer look
+    like" (analyze_citation_structure) or "who wins this one topic"
+    (find_citation_leaders), but "out of everything we care about, where do
+    we already show up, and where are we invisible." Use this first, then
+    use analyze_citation_gap on whichever keywords come back not cited to
+    see what to actually change.
+
+    Read-only: no side effects, safe to retry. Costs 1 quota unit per
+    keyword checked (free tier is 30 units/month shared across every
+    metered tool, so up to 30 keywords total that period if nothing else
+    is used). A per-keyword provider error doesn't fail the whole call -
+    that keyword's entry just carries an "error" field instead. ChatGPT
+    only - the underlying check has no Google AI Overview equivalent.
+
+    Returns: {"domain", "keywords_checked" (int, excludes any that
+    errored), "keywords_cited" (int), "coverage_pct" (float, 0-100),
+    "not_cited" (list of the keyword strings where domain did not appear -
+    the actionable list), "results" (one entry per keyword, in the order
+    given: {"keyword", "cited" (bool), "rank" (int|null, 1-based position
+    among that answer's sources - present even when cited is false, so you
+    can tell "just missed it" from "not in the running"), "num_sources_cited",
+    "source_domains" (who IS cited, for a keyword you are not in), "leads_with_list",
+    "opening_word_count"}, or {"keyword", "error"} for one that failed)}.
+
+    Args:
+        domain: bare domain to check, e.g. "example.com" (no https://, no www).
+        keywords: prompts/topics to check it against, e.g.
+            ["best project management software", "asana alternatives",
+            "free project management tool"]. Max 10.
+    """
+    if not domain or not domain.strip():
+        return {"error": "domain is empty - pass a bare domain, e.g. \"example.com\"."}
+    if not keywords:
+        return {
+            "error": (
+                "keywords list is empty - pass at least one prompt/topic to "
+                "check, e.g. [\"best project management software\"]."
+            )
+        }
+    if len(keywords) > 10:
+        return {
+            "error": (
+                f"Max 10 keywords per call, got {len(keywords)}. Split into "
+                "multiple calls."
+            )
+        }
+    if err := _guard_balance():
+        _log_call("check_prompt_coverage", "balance_denied", keyword_count=len(keywords))
+        return {"error": err}
+
+    target = _normalize_domain(domain)
+    results = []
+    for kw in keywords:
+        if err := _guard_usage(1):
+            _log_call("check_prompt_coverage", "quota_denied", keyword=kw)
+            results.append({"keyword": kw, "error": err})
+            continue
+        try:
+            result = dfs.citation_structure(keyword=kw)
+        except dfs.DataForSEOError:
+            # Same shape as analyze_citation_structure_batch: a per-keyword
+            # provider error must not sink the whole call, and the unit
+            # already spent above on a call that came back unusable is
+            # handed back.
+            _refund_usage(1)
+            _log_call("check_prompt_coverage", "provider_error", keyword=kw)
+            results.append({
+                "keyword": kw,
+                "error": (
+                    "Visibility data provider had a transient error on this "
+                    "keyword. The rest of the call still completed - retry "
+                    "just this keyword if you need it."
+                ),
+            })
+            continue
+        if result.get("error"):
+            _refund_usage(1)
+            _log_call("check_prompt_coverage", "error", keyword=kw)
+            results.append({"keyword": kw, "error": result["error"]})
+            continue
+
+        domains = result.get("source_domains") or []
+        rank = next(
+            (i for i, d in enumerate(domains, start=1) if _normalize_domain(d) == target),
+            None,
+        )
+        _log_call("check_prompt_coverage", "success", keyword=kw)
+        results.append({
+            "keyword": kw,
+            "cited": rank is not None,
+            "rank": rank,
+            "num_sources_cited": result.get("num_sources_cited"),
+            "source_domains": domains,
+            "leads_with_list": result.get("leads_with_list"),
+            "opening_word_count": result.get("opening_word_count"),
+        })
+
+    checked = [r for r in results if "error" not in r]
+    cited = [r for r in checked if r["cited"]]
+    return {
+        "domain": domain,
+        "keywords_checked": len(checked),
+        "keywords_cited": len(cited),
+        "coverage_pct": round(100 * len(cited) / len(checked), 1) if checked else 0.0,
+        "not_cited": [r["keyword"] for r in checked if not r["cited"]],
+        "results": results,
+    }
+
+
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def analyze_citation_gap(keyword: str, your_url: str) -> dict:
     """Compare your own page's structure against the AI-generated answer
     actually cited for this keyword, and return concrete gaps to close
@@ -589,7 +710,10 @@ def analyze_citation_gap(keyword: str, your_url: str) -> dict:
     side couldn't be fetched/parsed.
 
     Use analyze_citation_structure instead if you just want the winning
-    answer's shape, not a comparison against your own page.
+    answer's shape, not a comparison against your own page. Use
+    check_prompt_coverage first if you have several keywords and do not yet
+    know which ones you are missing from - this tool is for one keyword
+    you already know needs work.
 
     Args:
         keyword: the topic/query to check, e.g. "best project management tool".

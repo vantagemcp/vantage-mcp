@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.5] - 2026-09-07
+
+### Added
+- `check_prompt_coverage(domain, keywords)`: which of several prompts actually cite a specific domain, and which don't (up to 10 keywords, 1 unit each). This is usually the real first question of an AI-answer-engine audit - not what a winning answer looks like, but where a domain already shows up and where it is invisible. Reuses the exact-registrable-domain matching added to find_citation_leaders in 1.5.4 (now shared, rather than duplicated).
+
 ## [1.5.4] - 2026-09-07
 
 ### Added
