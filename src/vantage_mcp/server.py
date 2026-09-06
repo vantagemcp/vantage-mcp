@@ -13,6 +13,7 @@ where API-key auth + usage metering actually apply):
 import json
 import sys
 import time
+from datetime import datetime, timezone
 
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -138,14 +139,19 @@ def _guard_balance() -> str | None:
 
 
 def _guard_usage(cost: int) -> str | None:
-    """Metering gate, checked BEFORE any paid DataForSEO call.
+    """Metering gate, checked BEFORE any paid DataForSEO call, and only
+    AFTER _guard_balance has already confirmed the provider is reachable
+    and our own balance is healthy - that ordering is what stops a provider
+    outage from charging a customer's quota for nothing. See _refund_usage
+    for the remaining case ordering can't prevent: the balance check passes
+    but the call still comes back unusable.
 
     No access token present means stdio/local-dev mode (there's no
     HTTP auth layer to have populated one) - trusted, unmetered. Over
     Streamable HTTP a token is always required, so this always applies
     to real customers. `cost` is the calling tool's unit weight (10 for
-    the two expensive DataForSEO calls, 1 for the two cheap structure
-    ones) - see TIER_LIMITS in store.py for why.
+    the two expensive DataForSEO calls, 1 for the four cheap structure/
+    gap/trend ones) - see TIER_LIMITS in store.py for why.
     """
     token = get_access_token()
     if token is None:
@@ -155,6 +161,42 @@ def _guard_usage(cost: int) -> str | None:
     return None if allowed else reason
 
 
+def _refund_usage(cost: int) -> None:
+    """Hand back quota _guard_usage already charged for a call that came
+    back unusable (a provider error, or a response we could not parse).
+    Same no-token-in-dev-mode shape as _guard_usage, so calling this after
+    a guard that was itself a no-op is always safe."""
+    token = get_access_token()
+    if token is not None:
+        store.refund(token.client_id, cost)
+
+
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+def get_usage() -> dict:
+    """Check how much of this billing period's quota is left, before
+    spending any of it. Use this to answer 'how many checks do I have left'
+    or to decide whether a batch call will fit before running it.
+
+    Costs 0 quota units - this never touches the paid data provider, it
+    only reads Vantage's own record of what has been used.
+
+    Returns: {"tier", "period" (YYYY-MM), "units_used", "units_limit",
+    "units_remaining"}. check_ai_visibility and find_citation_leaders cost
+    10 units/call; analyze_citation_trend, analyze_citation_structure (and
+    its batch form, per keyword), and analyze_citation_gap cost 1.
+
+    stdio/local-dev mode (no HTTP access token) has no metering at all -
+    this returns tier "unmetered" with no real limit in that case.
+    """
+    token = get_access_token()
+    if token is None:
+        return {"tier": "unmetered", "period": None, "units_used": 0,
+                "units_limit": None, "units_remaining": None}
+    tier = tier_from_scopes(token.scopes)
+    _log_call("get_usage", "success")
+    return store.usage_status(token.client_id, tier)
+
+
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
     """Check how many times a domain is cited in AI-generated answers on a
@@ -162,7 +204,8 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
     'is my brand/domain visible in AI search' or 'does ChatGPT know about us'.
 
     Read-only: no side effects, safe to retry. Costs 10 quota units/call
-    (free tier: 3 checks/month total across all tools).
+    (free tier is 30 units/month shared across every metered tool, so up to 3
+    calls to this tool alone if nothing else is used that period).
 
     Returns: {"domain", "platform", "mentions_found" (int - how many times
     the domain was cited in the provider's tracked answers for this
@@ -182,15 +225,16 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
     if err := _guard_platform(platform):
         _log_call("check_ai_visibility", "invalid_platform")
         return {"error": err}
-    if err := _guard_usage(10):
-        _log_call("check_ai_visibility", "quota_denied")
-        return {"error": err}
     if err := _guard_balance():
         _log_call("check_ai_visibility", "balance_denied")
+        return {"error": err}
+    if err := _guard_usage(10):
+        _log_call("check_ai_visibility", "quota_denied")
         return {"error": err}
     try:
         mentions = dfs.domain_mentions(domain=domain, platform=platform)
     except dfs.DataForSEOError:
+        _refund_usage(10)
         _log_call("check_ai_visibility", "provider_error")
         return {
             "error": (
@@ -203,6 +247,7 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
         # domain_mentions() returns None when the provider's response
         # shape was unexpected, not when it confirmed zero mentions -
         # those are different answers and shouldn't look the same.
+        _refund_usage(10)
         _log_call("check_ai_visibility", "unparseable_response")
         return {
             "error": (
@@ -229,12 +274,22 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
     'is my competitor cited more than me for X'.
 
     Read-only: no side effects, safe to retry. Costs 10 quota units/call
-    (free tier: 3 checks/month total across all tools).
+    (free tier is 30 units/month shared across every metered tool, so up to 3
+    calls to this tool alone if nothing else is used that period).
 
     Returns: {"keyword", "platform", "top_domains" (list of {"domain",
     "mentions"}, most-cited domains for this keyword/platform, order as
-    ranked by the provider), "compare_domain_present" (bool, only present
-    when compare_domain was passed)}.
+    ranked by the provider), "top_domains_limit" (int, the provider's own
+    cap on this list - absence from it is NOT evidence a domain has zero
+    citations, only that it did not rank in the top `top_domains_limit`),
+    "compare_domain_rank" (int|null, only present when compare_domain was
+    passed: the domain's 1-based position in top_domains, or null if it
+    did not rank in the top `top_domains_limit`)}.
+
+    This tool's citation universe is the provider's tracked mention corpus
+    for the keyword, which is a different measurement from
+    analyze_citation_structure's single live answer - the two can
+    legitimately disagree on whether a given domain shows up.
 
     Use check_ai_visibility instead if you already know which domain you
     care about and just want its own citation count, not a leaderboard.
@@ -244,20 +299,23 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
         platform: "chat_gpt" or "google" (Google's AI Overview). Defaults
             to chat_gpt. Perplexity and Gemini aren't available - the
             underlying data provider doesn't cover them for this check.
-        compare_domain: optional bare domain to flag if present in the results.
+        compare_domain: optional bare domain to look up in the results
+            (exact match against the registrable domain, e.g. "notion.so"
+            will not match "mynotion.so.example.com").
     """
     if err := _guard_platform(platform):
         _log_call("find_citation_leaders", "invalid_platform")
         return {"error": err}
-    if err := _guard_usage(10):
-        _log_call("find_citation_leaders", "quota_denied")
-        return {"error": err}
     if err := _guard_balance():
         _log_call("find_citation_leaders", "balance_denied")
+        return {"error": err}
+    if err := _guard_usage(10):
+        _log_call("find_citation_leaders", "quota_denied")
         return {"error": err}
     try:
         result = dfs.citation_leaders(keyword=keyword, platform=platform)
     except dfs.DataForSEOError:
+        _refund_usage(10)
         _log_call("find_citation_leaders", "provider_error")
         return {
             "error": (
@@ -266,11 +324,30 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
                 "platform, contact support@vantagemcp.dev."
             )
         }
+    if result.get("error"):
+        # citation_leaders() returns no "top_domains" key on its own error
+        # path, so there is nothing here to accidentally compute
+        # compare_domain_rank over. Refund: quota was already spent on a
+        # call that came back unusable.
+        _refund_usage(10)
+        _log_call("find_citation_leaders", "unparseable_response")
+        return {
+            "keyword": keyword, "platform": platform,
+            "error": (
+                "Couldn't determine citation leaders for this keyword/platform "
+                "(the provider's response wasn't in the expected shape). Try "
+                "again, or contact support@vantagemcp.dev if it persists."
+            ),
+        }
     if compare_domain:
-        result["compare_domain_present"] = any(
-            compare_domain in (d.get("domain") or "") for d in result.get("top_domains", [])
+        cd = compare_domain.strip().lower().removeprefix("www.")
+        rank = next(
+            (i for i, d in enumerate(result.get("top_domains", []), start=1)
+             if (d.get("domain") or "").strip().lower().removeprefix("www.") == cd),
+            None,
         )
-    _log_call("find_citation_leaders", "error" if result.get("error") else "success")
+        result["compare_domain_rank"] = rank
+    _log_call("find_citation_leaders", "success")
     return result
 
 
@@ -283,13 +360,17 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
     needle'.
 
     Read-only: no side effects, safe to retry. Costs 1 quota unit/call
-    (free tier: 3 checks/month total across all tools).
+    (free tier is 30 units/month shared across every metered tool, so up to 30
+    calls to this tool alone if nothing else is used that period).
 
     Returns: {"domain", "platform", "months" (list of {"year", "month",
     "mentions" (int, 0 for a month with no tracked citations - a real
     measured zero, not a gap), "ai_search_volume"}, oldest to newest),
-    "trend": {"direction" ("up"/"down"/"flat"/"no_data"),
-    "earliest_mentions", "latest_mentions"}}.
+    "trend": {"direction" ("up"/"down"/"flat"/"no_data"), "earliest_mentions",
+    "latest_mentions", "excluded_current_partial_month" (bool, only present
+    and true when the most recent calendar month was excluded from the trend
+    calculation because it is still in progress and its count is not yet
+    final - it is still returned inside `months`, just not compared)}}.
 
     Use check_ai_visibility instead if you only need the current count,
     not how it's changed over time.
@@ -306,15 +387,16 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
     if err := _guard_platform(platform):
         _log_call("analyze_citation_trend", "invalid_platform")
         return {"error": err}
-    if err := _guard_usage(1):
-        _log_call("analyze_citation_trend", "quota_denied")
-        return {"error": err}
     if err := _guard_balance():
         _log_call("analyze_citation_trend", "balance_denied")
+        return {"error": err}
+    if err := _guard_usage(1):
+        _log_call("analyze_citation_trend", "quota_denied")
         return {"error": err}
     try:
         result = dfs.citation_trend(domain=domain, platform=platform)
     except dfs.DataForSEOError:
+        _refund_usage(1)
         _log_call("analyze_citation_trend", "provider_error")
         return {
             "error": (
@@ -324,16 +406,31 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
             )
         }
     if result.get("error"):
+        _refund_usage(1)
         _log_call("analyze_citation_trend", "error")
         return result
 
     window = result.get("months", [])[-max(1, min(months, 13)):]
-    if not window:
+
+    # The current calendar month is always partial - checked on day 7 of a
+    # month, its mentions count is roughly 7/30 of what it will end up being,
+    # not a real reading. Comparing "earliest" to a partial "latest" reported
+    # a domain with a strong August as "flat, 0 -> 0" on 2026-09-07 simply
+    # because September had barely started. Excluded from the trend
+    # calculation, but kept in `months` (labeled) since a caller can still
+    # want to see the partial figure it has so far.
+    now = datetime.now(timezone.utc)
+    current_partial = bool(window) and (window[-1]["year"], window[-1]["month"]) == (now.year, now.month)
+    trend_window = window[:-1] if current_partial and len(window) > 1 else window
+
+    if not trend_window:
         trend = {"direction": "no_data"}
     else:
-        earliest, latest = window[0]["mentions"], window[-1]["mentions"]
+        earliest, latest = trend_window[0]["mentions"], trend_window[-1]["mentions"]
         direction = "flat" if latest == earliest else ("up" if latest > earliest else "down")
         trend = {"direction": direction, "earliest_mentions": earliest, "latest_mentions": latest}
+        if current_partial:
+            trend["excluded_current_partial_month"] = True
 
     _log_call("analyze_citation_trend", "success")
     return {"domain": domain, "platform": platform, "months": window, "trend": trend}
@@ -348,7 +445,8 @@ def analyze_citation_structure(keyword: str) -> dict:
     topic, e.g. before writing content meant to get cited.
 
     Read-only: no side effects, safe to retry. Costs 1 quota unit/call
-    (free tier: 3 checks/month total across all tools).
+    (free tier is 30 units/month shared across every metered tool, so up to 30
+    calls to this tool alone if nothing else is used that period).
 
     Returns: {"keyword", "leads_with_list" (bool), "opening_word_count"
     (int), "opening_has_number" (bool), "num_sources_cited" (int),
@@ -362,15 +460,16 @@ def analyze_citation_structure(keyword: str) -> dict:
     Args:
         keyword: the topic/query to analyze, e.g. "how to reduce churn".
     """
-    if err := _guard_usage(1):
-        _log_call("analyze_citation_structure", "quota_denied")
-        return {"error": err}
     if err := _guard_balance():
         _log_call("analyze_citation_structure", "balance_denied")
+        return {"error": err}
+    if err := _guard_usage(1):
+        _log_call("analyze_citation_structure", "quota_denied")
         return {"error": err}
     try:
         result = dfs.citation_structure(keyword=keyword)
     except dfs.DataForSEOError:
+        _refund_usage(1)
         _log_call("analyze_citation_structure", "provider_error")
         return {
             "error": (
@@ -379,6 +478,8 @@ def analyze_citation_structure(keyword: str) -> dict:
                 "contact support@vantagemcp.dev."
             )
         }
+    if result.get("error"):
+        _refund_usage(1)
     _log_call("analyze_citation_structure", "error" if result.get("error") else "success")
     return result
 
@@ -393,8 +494,9 @@ def analyze_citation_structure_batch(keywords: list[str]) -> dict:
     per topic.
 
     Read-only: no side effects, safe to retry. Costs 1 quota unit per
-    keyword in the batch (free tier: 3 checks/month total across all
-    tools). A per-keyword provider error doesn't fail the whole batch -
+    keyword in the batch (free tier is 30 units/month shared across all
+    the metered tools, so up to 30 keywords total that period if nothing else
+    is used). A per-keyword provider error doesn't fail the whole batch -
     that keyword's entry just carries an "error" field instead.
 
     Returns: {"results" (list, one {"keyword", ...same shape as
@@ -435,8 +537,10 @@ def analyze_citation_structure_batch(keywords: list[str]) -> dict:
             result = dfs.citation_structure(keyword=kw)
         except dfs.DataForSEOError:
             # A per-keyword provider error must not sink the whole batch -
-            # this call already consumed one unit of usage above, so the
-            # keyword still needs a result entry, just one marked failed.
+            # this call already consumed one unit of usage above, so it is
+            # handed back: the keyword got no usable result, and the batch
+            # still needs a result entry for it, just one marked failed.
+            _refund_usage(1)
             _log_call("analyze_citation_structure_batch", "provider_error", keyword=kw)
             results.append({
                 "keyword": kw,
@@ -447,6 +551,8 @@ def analyze_citation_structure_batch(keywords: list[str]) -> dict:
                 ),
             })
             continue
+        if result.get("error"):
+            _refund_usage(1)
         _log_call("analyze_citation_structure_batch", "error" if result.get("error") else "success", keyword=kw)
         results.append(result)
 
@@ -472,7 +578,8 @@ def analyze_citation_gap(keyword: str, your_url: str) -> dict:
     does a winning answer look like'.
 
     Read-only: no side effects, safe to retry. Costs 1 quota unit/call
-    (free tier: 3 checks/month total across all tools).
+    (free tier is 30 units/month shared across every metered tool, so up to 30
+    calls to this tool alone if nothing else is used that period).
 
     Returns: {"keyword", "your_url", "winning" (structure of the
     AI-cited answer, same shape as analyze_citation_structure), "yours"
@@ -489,15 +596,16 @@ def analyze_citation_gap(keyword: str, your_url: str) -> dict:
         your_url: full URL of your own page to compare, e.g.
             "https://example.com/best-project-management-tools".
     """
-    if err := _guard_usage(1):
-        _log_call("analyze_citation_gap", "quota_denied")
-        return {"error": err}
     if err := _guard_balance():
         _log_call("analyze_citation_gap", "balance_denied")
+        return {"error": err}
+    if err := _guard_usage(1):
+        _log_call("analyze_citation_gap", "quota_denied")
         return {"error": err}
     try:
         result = dfs.citation_gap(keyword=keyword, your_url=your_url)
     except dfs.DataForSEOError:
+        _refund_usage(1)
         _log_call("analyze_citation_gap", "provider_error")
         return {
             "error": (
@@ -506,6 +614,8 @@ def analyze_citation_gap(keyword: str, your_url: str) -> dict:
                 "URL, contact support@vantagemcp.dev."
             )
         }
+    if result.get("error"):
+        _refund_usage(1)
     _log_call("analyze_citation_gap", "error" if result.get("error") else "success")
     return result
 

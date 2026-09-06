@@ -161,6 +161,36 @@ def create_api_key_for_stripe_customer(
     existing = get_key_by_stripe_customer(stripe_customer_id)
     if existing:
         return None, existing["client_id"]
+
+    # A customer who signed up free with this email, then pays with the
+    # same one, already has a row - `email` carries a UNIQUE index, so a
+    # plain INSERT here throws sqlite3.IntegrityError and the checkout
+    # success page (and the webhook, independently) 500s: the customer is
+    # charged, Stripe shows an active subscription, and no paid key is ever
+    # created or emailed. Found 2026-09-07, never triggered live as far as
+    # billing.py's logs show, but nothing prevented it. Upgrade that
+    # existing row in place instead of inserting a second one: their free
+    # key becomes their paid key, same key, new tier and Stripe ids. This
+    # returns (None, client_id), the same "already exists" shape as the
+    # existing-stripe-customer branch above, and billing.py's checkout
+    # success page already renders that case correctly ("A key already
+    # exists for this account... email support to reissue").
+    if email:
+        with closing(_connect()) as conn:
+            row = conn.execute(
+                "SELECT client_id FROM api_keys WHERE email = ?", (email,)
+            ).fetchone()
+        if row:
+            client_id = row[0]
+            with closing(_connect()) as conn:
+                conn.execute(
+                    "UPDATE api_keys SET tier = ?, stripe_customer_id = ?, "
+                    "stripe_subscription_id = ? WHERE client_id = ?",
+                    (tier, stripe_customer_id, stripe_subscription_id, client_id),
+                )
+                conn.commit()
+            return None, client_id
+
     return create_api_key(
         tier=tier, stripe_customer_id=stripe_customer_id, stripe_subscription_id=stripe_subscription_id, email=email
     )
@@ -196,6 +226,24 @@ def verify(token: str) -> dict | None:
     return {"client_id": row[0], "tier": row[1]}
 
 
+def usage_status(client_id: str, tier: str) -> dict:
+    """Read-only usage snapshot for this billing period. Never consumes
+    anything - added alongside the get_usage tool, itself added because there
+    is no dashboard anywhere for Vantage: the only way an agent (or the
+    customer through it) could previously learn the cap existed at all was to
+    hit it mid-workflow and get denied. Same period/limit logic as
+    check_and_consume, deliberately kept as a straight read."""
+    limit = TIER_LIMITS.get(tier, 0)
+    period = _current_period()
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT calls_used FROM usage WHERE client_id = ? AND period = ?", (client_id, period)
+        ).fetchone()
+    used = row[0] if row else 0
+    return {"tier": tier, "period": period, "units_used": used, "units_limit": limit,
+            "units_remaining": max(limit - used, 0)}
+
+
 def check_and_consume(client_id: str, tier: str, cost: int) -> tuple[bool, int, str | None]:
     """Check this billing period's usage against the tier cap, and
     consume `cost` units if there's room (checked BEFORE the paid
@@ -226,3 +274,26 @@ def check_and_consume(client_id: str, tier: str, cost: int) -> tuple[bool, int, 
         )
         conn.commit()
     return True, limit - used - cost, None
+
+
+def refund(client_id: str, cost: int) -> None:
+    """Hand back `cost` units charged by check_and_consume for a call that
+    turned out not to deliver a usable result.
+
+    NOT a general safety net: _guard_balance is checked before _guard_usage
+    now precisely so the common failure (provider unreachable / our own
+    balance too low) never charges anything in the first place. This exists
+    for the narrower case that ordering can't prevent - the balance check
+    passes, the DataForSEO call is made, and IT still comes back unusable
+    (a malformed response, an exception during parsing) - so quota already
+    spent on nothing gets returned rather than silently kept. Floored at 0:
+    a customer who somehow gets refunded more than they used should end up
+    at 0 for the period, not negative (which would look like a bonus)."""
+    period = _current_period()
+    with closing(_connect()) as conn:
+        conn.execute(
+            "UPDATE usage SET calls_used = MAX(0, calls_used - ?) "
+            "WHERE client_id = ? AND period = ?",
+            (cost, client_id, period),
+        )
+        conn.commit()

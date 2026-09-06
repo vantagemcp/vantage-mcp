@@ -83,7 +83,12 @@ def domain_mentions(domain: str, platform: str = "chat_gpt") -> int | None:
 
 def citation_leaders(keyword: str, platform: str = "chat_gpt", limit: int = 5) -> dict:
     """Who dominates AI-answer citations for this keyword/topic, and
-    whether the given domain shows up in that list. ~$0.15/call."""
+    whether the given domain shows up in that list. ~$0.15/call.
+
+    `limit` is the provider's own cap on how many domains come back (max 10),
+    echoed in the result as `top_domains_limit` so a caller can tell
+    "not in the top N" apart from "not cited anywhere" - those are different
+    claims and this endpoint can only ever support the first one."""
     body = [{"target": [{"keyword": keyword}], "items_list_limit": limit, "platform": platform}]
     res = _call("ai_optimization/llm_mentions/top_domains/live", body)
     try:
@@ -92,9 +97,16 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", limit: int = 5) -
         for it in items:
             group = _first_group_list(it)
             leaders.append({"domain": it["key"], "mentions": group[0].get("mentions") if group else None})
-        return {"keyword": keyword, "platform": platform, "top_domains": leaders}
+        return {"keyword": keyword, "platform": platform, "top_domains": leaders,
+                "top_domains_limit": limit}
     except Exception as e:
-        return {"keyword": keyword, "platform": platform, "top_domains": [], "error": str(e)}
+        # No "top_domains": [] here on purpose. An empty list next to an error
+        # was previously indistinguishable from a real, confirmed-empty result -
+        # server.py's compare_domain_present was computed over this same empty
+        # list either way, which is how a parse failure turned into a false
+        # "not cited" answer. An error response now carries no top_domains key
+        # at all, so the caller cannot accidentally read it as a real leaderboard.
+        return {"keyword": keyword, "platform": platform, "error": str(e)}
 
 
 def citation_trend(domain: str, platform: str = "chat_gpt") -> dict:
@@ -199,12 +211,23 @@ def citation_structure(keyword: str) -> dict:
         detail_preview = strip_markdown(markdown[cutoff:])[:240]
         if len(strip_markdown(markdown[cutoff:])) > 240:
             detail_preview = detail_preview.rsplit(" ", 1)[0].rstrip(",;:") + "..."
+        # The provider can list the same domain twice (e.g. two different
+        # pages on bitwarden.com cited separately), which inflated both the
+        # visible list and num_sources_cited - a "9 sources" answer with 2
+        # duplicates is really 7 distinct sites. Deduped by domain, order
+        # preserved (first mention wins), before counting or truncating,
+        # so num_sources_cited and the list it describes always agree.
+        domains = []
+        for src in sources:
+            d = src.get("domain")
+            if d and d not in domains:
+                domains.append(d)
         return {
             "keyword": keyword,
             **parsed,
             "detail_preview": detail_preview,
-            "num_sources_cited": len(sources),
-            "source_domains": [s.get("domain") for s in sources][:10],
+            "num_sources_cited": len(domains[:10]),
+            "source_domains": domains[:10],
         }
     except Exception as e:
         return {"keyword": keyword, "error": str(e)}

@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.4] - 2026-09-07
+
+### Added
+- `get_usage()`: a new, zero-cost tool that reports the current billing period's usage, limit and remaining units. Added because there is no dashboard anywhere for Vantage - the only previous way to learn the quota existed was to hit it mid-workflow and get denied.
+
+### Fixed
+- Every metered tool checked and spent quota before confirming the upstream provider was reachable, so a provider outage or a low prepaid balance charged the customer's quota for an error message. The order is now: confirm the provider is reachable, then spend quota, then call it. Any call that still comes back unusable after that (a malformed response, an upstream exception) has its quota refunded.
+- `find_citation_leaders`'s `compare_domain_present` was computed the same way whether the upstream call succeeded or failed, so a parse failure looked identical to "not cited anywhere." It is replaced with `compare_domain_rank` (the domain's position in the results, or null), matched by exact registrable domain rather than substring (a substring match let `notion.so` match `mynotion.so.example.com`). The result also now states `top_domains_limit`, since absence from a top-N list is not evidence of zero citations.
+- `analyze_citation_trend` compared the earliest month in its window to the most recent one, and the most recent one is always the current, in-progress month - a domain with a strong previous month could report "flat" simply because the new month had barely started. The current partial month is now excluded from the trend comparison (and flagged when it is), though still returned in the month-by-month list.
+- `analyze_citation_structure` (and its batch form) could list the same domain twice, since the provider can cite two different pages on one site separately, which also inflated the reported source count. Domains are now deduplicated before counting.
+- All six tool docstrings said the free tier was "3 checks/month total across all tools." The real cap is 30 units/month, spent at different rates by different tools (10 units for the two visibility-lookup tools, 1 unit for the rest) - a free customer could run roughly 10x more of the cheap tools than the docstring implied, understating the free tier by an order of magnitude on the product's only pricing page.
+- A customer who signed up on the free tier and later paid with the same email could hit a database error and receive no working key at all, despite being charged: the paid-signup path only checked for an existing key by Stripe customer ID, and a second row with the same email violated a uniqueness constraint. It now upgrades the existing free key in place.
+
 ## [1.5.3] - 2026-09-05
 
 ### Changed
