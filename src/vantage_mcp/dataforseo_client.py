@@ -127,6 +127,27 @@ def citation_trend(domain: str, platform: str = "chat_gpt") -> dict:
 
 _LIST_RE = re.compile(r"^\s*(?:[-*]|\d+\.)\s+", re.MULTILINE)
 
+# Markdown markers, removed before anything is counted or shown. DataForSEO
+# returns the answer as markdown, so an opening arrives as
+# "## Best free password manager: **Bitwarden**". Counting that with .split()
+# scores "##" as a word, which is how a five-word opening was reported as six.
+_MD_MARKERS = [
+    (re.compile(r"\[([^\]]*)\]\([^)]*$"), ""),
+    (re.compile(r"\[([^\]]*)\]\([^)]*\)"), r"\1"),
+    (re.compile(r"^#{1,6}\s*", re.MULTILINE), ""),
+    (re.compile(r"\*\*(.+?)\*\*", re.S), r"\1"),
+    (re.compile(r"(?<!\w)_(.+?)_(?!\w)", re.S), r"\1"),
+    (re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", re.S), r"\1"),
+    (re.compile(r"`([^`]*)`"), r"\1"),
+]
+
+
+def strip_markdown(text: str) -> str:
+    out = text or ""
+    for pattern, repl in _MD_MARKERS:
+        out = pattern.sub(repl, out)
+    return " ".join(out.split())
+
 
 def _parse_opening(markdown: str) -> dict:
     """Shared structural read of a markdown document's opening, used
@@ -138,8 +159,12 @@ def _parse_opening(markdown: str) -> dict:
     para_end = markdown.find("\n\n")
     if para_end != -1 and para_end < cutoff:
         cutoff = para_end
-    opening = markdown[:cutoff].strip()
+    opening = strip_markdown(markdown[:cutoff])
     return {
+        # The opening itself, not only facts about it. Reporting "opens with a
+        # sentence, 11 words" while withholding the sentence leaves the reader
+        # with nothing to act on and no way to check the claim.
+        "opening": opening,
         "leads_with_list": bool(_LIST_RE.match(markdown.lstrip())),
         "opening_word_count": len(opening.split()),
         "opening_has_number": bool(re.search(r"\d", opening)),
@@ -159,9 +184,25 @@ def citation_structure(keyword: str) -> dict:
         result = task["result"][0]
         markdown = result.get("markdown") or ""
         sources = result.get("sources") or []
+        parsed = _parse_opening(markdown)
+        # A short look at what follows the opening, so a caller can see the
+        # answer continues rather than being told it does. Truncated hard: this
+        # is a preview, not a copy of somebody else's answer.
+        # Slice the RAW markdown by the raw cutoff, not by the cleaned
+        # opening's length: cleaning shortens the string, so using the cleaned
+        # length here would re-include the tail of the opening.
+        list_match = _LIST_RE.search(markdown)
+        cutoff = list_match.start() if list_match else len(markdown)
+        para_end = markdown.find("\n\n")
+        if para_end != -1 and para_end < cutoff:
+            cutoff = para_end
+        detail_preview = strip_markdown(markdown[cutoff:])[:240]
+        if len(strip_markdown(markdown[cutoff:])) > 240:
+            detail_preview = detail_preview.rsplit(" ", 1)[0].rstrip(",;:") + "..."
         return {
             "keyword": keyword,
-            **_parse_opening(markdown),
+            **parsed,
+            "detail_preview": detail_preview,
             "num_sources_cited": len(sources),
             "source_domains": [s.get("domain") for s in sources][:10],
         }

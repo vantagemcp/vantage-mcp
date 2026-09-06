@@ -143,12 +143,17 @@ def create_api_key_for_email(email: str) -> tuple[str | None, str]:
 
 
 def create_api_key_for_stripe_customer(
-    stripe_customer_id: str, stripe_subscription_id: str, tier: str
+    stripe_customer_id: str, stripe_subscription_id: str, tier: str, email: str | None = None
 ) -> tuple[str | None, str]:
     """Idempotent get-or-create for a paying Stripe customer. Both the
     checkout-success page and the webhook call this independently (the
     webhook can arrive before or after the customer's browser redirect),
     so this must never issue two keys for the same customer.
+
+    email is Stripe's checkout customer_details.email. It is stored so a
+    real paying customer can be told apart from a manually-issued key,
+    which carries no email: without it the two are indistinguishable in
+    the store.
 
     Returns (plaintext_or_None, client_id). plaintext is None if a key
     already existed - it was already shown once and is never re-shown.
@@ -156,7 +161,9 @@ def create_api_key_for_stripe_customer(
     existing = get_key_by_stripe_customer(stripe_customer_id)
     if existing:
         return None, existing["client_id"]
-    return create_api_key(tier=tier, stripe_customer_id=stripe_customer_id, stripe_subscription_id=stripe_subscription_id)
+    return create_api_key(
+        tier=tier, stripe_customer_id=stripe_customer_id, stripe_subscription_id=stripe_subscription_id, email=email
+    )
 
 
 def update_tier_for_stripe_customer(stripe_customer_id: str, new_tier: str) -> bool:
