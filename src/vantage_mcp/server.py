@@ -207,9 +207,20 @@ def get_usage() -> dict:
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
-    """Check how many times a domain is cited in AI-generated answers on a
-    given AI platform (chat_gpt, google). Use this to answer
-    'is my brand/domain visible in AI search' or 'does ChatGPT know about us'.
+    """DEPRECATED - still works, but prefer another tool below. Kept callable
+    for anyone already relying on it; not recommended for a new integration.
+
+    Checks how many times a domain is cited in AI-generated answers on a
+    given AI platform (chat_gpt, google), as one bare count with no context.
+
+    Why deprecated: it costs 10 units, the same as find_citation_leaders, for
+    a single number with no time context and no comparison. If you want to
+    know whether a domain shows up in the answers that matter for it, use
+    check_prompt_coverage (1 unit per keyword) - it gives cited/not-cited per
+    keyword, ranked, across as many prompts as you actually care about,
+    for less than the cost of one call here. If you want the count over
+    time, analyze_citation_trend already returns this same number monthly,
+    including right now, for 1 unit.
 
     Read-only: no side effects, safe to retry. Costs 10 quota units/call
     (free tier is 30 units/month shared across every metered tool, so up to 3
@@ -219,10 +230,11 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
     the domain was cited in the provider's tracked answers for this
     platform), "visible" (bool - true if mentions_found > 0)}.
 
+    Use check_prompt_coverage instead for "is my brand cited" across the
+    prompts you actually care about, at a tenth of the cost per check. Use
+    analyze_citation_trend instead for this same count with history attached.
     Use find_citation_leaders instead if you want a ranked list of who's
-    winning for a topic rather than one domain's own count. Use
-    analyze_citation_trend instead if you want to see this count change
-    over time rather than right now.
+    winning a topic rather than one domain's own count.
 
     Args:
         domain: bare domain to check, e.g. "example.com" (no https://, no www).
@@ -299,8 +311,9 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
     analyze_citation_structure's single live answer - the two can
     legitimately disagree on whether a given domain shows up.
 
-    Use check_ai_visibility instead if you already know which domain you
-    care about and just want its own citation count, not a leaderboard.
+    Use check_prompt_coverage instead if you already know which domain you
+    care about and just want to know whether it is cited (check_ai_visibility
+    also answers this, but is deprecated - see its own docstring).
 
     Args:
         keyword: the topic/query to check, e.g. "best project management tool".
@@ -380,8 +393,9 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
     calculation because it is still in progress and its count is not yet
     final - it is still returned inside `months`, just not compared)}}.
 
-    Use check_ai_visibility instead if you only need the current count,
-    not how it's changed over time.
+    The most recent entry in `months` (or `trend.latest_mentions` when the
+    current month is not excluded) already IS the current count, so there is
+    no need for a separate call just to see it right now.
 
     Args:
         domain: bare domain to check, e.g. "example.com" (no https://, no www).

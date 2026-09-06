@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.6] - 2026-09-07
+
+### Deprecated
+- `check_ai_visibility` is deprecated, not removed. It still works exactly as before - same cost, same behaviour, same return shape - but its docstring now says so and points elsewhere: `check_prompt_coverage` gives the same cited/not-cited signal per keyword at a tenth of the cost, and `analyze_citation_trend` already contains the current count in its own `months`/`trend` fields. No existing integration needs to change anything; new ones should reach for either of those instead.
+
 ## [1.5.5] - 2026-09-07
 
 ### Added
