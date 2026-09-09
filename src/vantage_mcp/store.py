@@ -143,17 +143,17 @@ def create_api_key_for_email(email: str) -> tuple[str | None, str]:
 
 
 def create_api_key_for_stripe_customer(
-    stripe_customer_id: str, stripe_subscription_id: str, tier: str, email: str | None = None
+    stripe_customer_id: str, stripe_subscription_id: str, tier: str
 ) -> tuple[str | None, str]:
     """Idempotent get-or-create for a paying Stripe customer. Both the
     checkout-success page and the webhook call this independently (the
     webhook can arrive before or after the customer's browser redirect),
     so this must never issue two keys for the same customer.
 
-    email is Stripe's checkout customer_details.email. It is stored so a
-    real paying customer can be told apart from a manually-issued key,
-    which carries no email: without it the two are indistinguishable in
-    the store.
+    This path deliberately records no email. Whatever a deployment wants
+    to keep against a paying customer is that deployment's own billing
+    concern and is not part of this package; the free self-serve path
+    above (create_api_key_for_email) is the one that keys on email.
 
     Returns (plaintext_or_None, client_id). plaintext is None if a key
     already existed - it was already shown once and is never re-shown.
@@ -161,38 +161,8 @@ def create_api_key_for_stripe_customer(
     existing = get_key_by_stripe_customer(stripe_customer_id)
     if existing:
         return None, existing["client_id"]
-
-    # A customer who signed up free with this email, then pays with the
-    # same one, already has a row - `email` carries a UNIQUE index, so a
-    # plain INSERT here throws sqlite3.IntegrityError and the checkout
-    # success page (and the webhook, independently) 500s: the customer is
-    # charged, Stripe shows an active subscription, and no paid key is ever
-    # created or emailed. Found 2026-09-07, never triggered live as far as
-    # billing.py's logs show, but nothing prevented it. Upgrade that
-    # existing row in place instead of inserting a second one: their free
-    # key becomes their paid key, same key, new tier and Stripe ids. This
-    # returns (None, client_id), the same "already exists" shape as the
-    # existing-stripe-customer branch above, and billing.py's checkout
-    # success page already renders that case correctly ("A key already
-    # exists for this account... email support to reissue").
-    if email:
-        with closing(_connect()) as conn:
-            row = conn.execute(
-                "SELECT client_id FROM api_keys WHERE email = ?", (email,)
-            ).fetchone()
-        if row:
-            client_id = row[0]
-            with closing(_connect()) as conn:
-                conn.execute(
-                    "UPDATE api_keys SET tier = ?, stripe_customer_id = ?, "
-                    "stripe_subscription_id = ? WHERE client_id = ?",
-                    (tier, stripe_customer_id, stripe_subscription_id, client_id),
-                )
-                conn.commit()
-            return None, client_id
-
     return create_api_key(
-        tier=tier, stripe_customer_id=stripe_customer_id, stripe_subscription_id=stripe_subscription_id, email=email
+        tier=tier, stripe_customer_id=stripe_customer_id, stripe_subscription_id=stripe_subscription_id
     )
 
 
