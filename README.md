@@ -31,7 +31,7 @@ Add to your MCP client config:
 }
 ```
 
-Try it first with no account at all at [vantagemcp.dev/check](https://vantagemcp.dev/check), or get a free API key (3 checks/month, no card required) at [vantagemcp.dev](https://vantagemcp.dev).
+Try it first with no account at all at [vantagemcp.dev/check](https://vantagemcp.dev/check), or get a free API key (30 quota units a month, no card required) at [vantagemcp.dev](https://vantagemcp.dev).
 
 ## Tools
 
@@ -46,7 +46,9 @@ Still works, but costs 10 units for a bare count with no context. Use
 (already includes the current count) instead.
 
 ### `check_prompt_coverage`
-Which of several prompts actually cite a specific domain, and which don't - up to 10 keywords in one call.
+Which of several prompts actually cite a specific domain, and which don't - up to 10 keywords in one call. ChatGPT, 1 unit per keyword.
+
+Cited and named are reported separately. An answer can name your brand without linking you (`mentioned_not_cited`: the model already knows you, it just isn't citing you) or link a page it never names. Pass `brand` (e.g. `"Notion"`) so the name check looks for your real brand instead of a guess from the domain.
 > "Out of everything we care about, where do we already show up?"
 
 ### `find_citation_leaders`

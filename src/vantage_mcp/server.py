@@ -592,7 +592,7 @@ def analyze_citation_structure_batch(keywords: list[str]) -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
-def check_prompt_coverage(domain: str, keywords: list[str]) -> dict:
+def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = None) -> dict:
     """Check which of several prompts/keywords actually cite a specific
     domain, and which ones don't. This is usually the first real question
     in an AI-answer-engine audit - not "what does a winning answer look
@@ -617,13 +617,23 @@ def check_prompt_coverage(domain: str, keywords: list[str]) -> dict:
     among that answer's sources - present even when cited is false, so you
     can tell "just missed it" from "not in the running"), "num_sources_cited",
     "source_domains" (who IS cited, for a keyword you are not in), "leads_with_list",
-    "opening_word_count"}, or {"keyword", "error"} for one that failed)}.
+    "opening_word_count", "mentioned" (bool - the answer's text names the
+    domain or brand, whether or not it links to it)}, or {"keyword",
+    "error"} for one that failed), "keywords_mentioned" (int),
+    "mentioned_not_cited" (keywords where the answer names you but does not
+    cite you - the model already knows you, it just isn't linking you),
+    "mention_terms" (exactly what was looked for in the answer text)}.
+    "Cited" and "mentioned" are separate claims and are never merged.
 
     Args:
         domain: bare domain to check, e.g. "example.com" (no https://, no www).
         keywords: prompts/topics to check it against, e.g.
             ["best project management software", "asana alternatives",
             "free project management tool"]. Max 10.
+        brand: optional brand name to look for in the answer text, e.g.
+            "Notion". Without it, the domain's first label is used ("notion"
+            for notion.so), which can match an ordinary word by accident for
+            a dictionary-word domain, so pass the real brand when known.
     """
     if not domain or not domain.strip():
         return {"error": "domain is empty - pass a bare domain, e.g. \"example.com\"."}
@@ -646,6 +656,9 @@ def check_prompt_coverage(domain: str, keywords: list[str]) -> dict:
         return {"error": err}
 
     target = _normalize_domain(domain)
+    # What counts as the answer naming you: the domain itself, plus the brand
+    # if given, else the domain's first label as a best guess.
+    mention_terms = [target] + ([brand.strip()] if brand and brand.strip() else [target.split(".")[0]])
     results = []
     for kw in keywords:
         if err := _guard_usage(1):
@@ -653,7 +666,7 @@ def check_prompt_coverage(domain: str, keywords: list[str]) -> dict:
             results.append({"keyword": kw, "error": err})
             continue
         try:
-            result = dfs.citation_structure(keyword=kw)
+            result = dfs.citation_structure(keyword=kw, mention_terms=mention_terms)
         except dfs.DataForSEOError:
             # Same shape as analyze_citation_structure_batch: a per-keyword
             # provider error must not sink the whole call, and the unit
@@ -690,6 +703,7 @@ def check_prompt_coverage(domain: str, keywords: list[str]) -> dict:
             "source_domains": domains,
             "leads_with_list": result.get("leads_with_list"),
             "opening_word_count": result.get("opening_word_count"),
+            "mentioned": bool(result.get("mentioned")),
         })
 
     checked = [r for r in results if "error" not in r]
@@ -700,6 +714,9 @@ def check_prompt_coverage(domain: str, keywords: list[str]) -> dict:
         "keywords_cited": len(cited),
         "coverage_pct": round(100 * len(cited) / len(checked), 1) if checked else 0.0,
         "not_cited": [r["keyword"] for r in checked if not r["cited"]],
+        "keywords_mentioned": len([r for r in checked if r["mentioned"]]),
+        "mentioned_not_cited": [r["keyword"] for r in checked if r["mentioned"] and not r["cited"]],
+        "mention_terms": mention_terms,
         "results": results,
     }
 

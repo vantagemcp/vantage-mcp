@@ -183,10 +183,34 @@ def _parse_opening(markdown: str) -> dict:
     }
 
 
-def citation_structure(keyword: str) -> dict:
+# A citation chip in the answer's markdown is a link whose visible text is only
+# a domain, e.g. "([nhs.uk](https://www.nhs.uk/...))". That is the answer citing
+# a source, not naming one, so chips are removed before looking for a mention.
+_CITATION_CHIP_RE = re.compile(r"\[\s*[\w.-]+\.[a-z]{2,}\s*\]\([^)]*\)", re.IGNORECASE)
+
+
+def mentions_any(markdown: str, terms: list[str]) -> bool:
+    """True if the answer's own text names any of `terms` (whole word, case
+    insensitive), ignoring domain-only citation links. "Named" is a different
+    claim from "cited": an answer can recommend a product without linking it,
+    and can link a page it never names. Terms under 3 characters are skipped,
+    since they match inside ordinary words."""
+    text = strip_markdown(_CITATION_CHIP_RE.sub("", markdown or ""))
+    for term in terms:
+        term = (term or "").strip()
+        if len(term) < 3:
+            continue
+        if re.search(r"(?<![\w-])" + re.escape(term) + r"(?![\w-])", text, re.IGNORECASE):
+            return True
+    return False
+
+
+def citation_structure(keyword: str, mention_terms: list[str] | None = None) -> dict:
     """Structural shape of the AI-generated answer actually cited for
     this keyword: does it lead with a list, how long is the opening,
-    how many sources does it cite, which domains. ~$0.004/call."""
+    how many sources does it cite, which domains. ~$0.004/call.
+    With `mention_terms`, also reports whether the answer text names any of
+    them ("mentioned"), from the same response at no extra cost."""
     body = [{"keyword": keyword, "language_code": "en", "location_name": "United States", "force_web_search": True}]
     res = _call("ai_optimization/chat_gpt/llm_scraper/live/advanced", body, timeout=130)
     try:
@@ -228,6 +252,7 @@ def citation_structure(keyword: str) -> dict:
             "detail_preview": detail_preview,
             "num_sources_cited": len(domains[:10]),
             "source_domains": domains[:10],
+            **({"mentioned": mentions_any(markdown, mention_terms)} if mention_terms else {}),
         }
     except Exception as e:
         return {"keyword": keyword, "error": str(e)}
