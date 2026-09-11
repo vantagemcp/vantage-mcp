@@ -119,14 +119,35 @@ def _log_call(tool: str, outcome: str, **extra: object) -> None:
         pass  # the journald copy above is authoritative; this is a convenience mirror
 
 
+# DataForSEO's balance endpoint allows 6 requests a minute per ACCOUNT
+# (shared with every other job on that account), and every metered call used
+# to hit it first, so a run of checks got refused for no reason: 3 of 30 in
+# an internal test run of 2026-09-11. The last good reading is reused for
+# BALANCE_FRESH_S; a failed lookup falls back to it only while it is younger
+# than BALANCE_FALLBACK_S, and the $1 floor still applies to it. Past that it
+# fails closed, exactly as before. Worst case is about 15 minutes of checks
+# after the balance really drops below the floor, which is cents.
+BALANCE_FRESH_S = 300
+BALANCE_FALLBACK_S = 900
+_balance_cache: dict = {"value": None, "at": 0.0}
+
+
 def _guard_balance() -> str | None:
-    try:
-        balance = dfs.read_balance()
-    except dfs.DataForSEOError:
-        return (
-            "Visibility data provider temporarily unavailable. Try again in a "
-            "few minutes - if it persists, contact support@vantagemcp.dev."
-        )
+    now = time.monotonic()
+    cached, at = _balance_cache["value"], _balance_cache["at"]
+    if cached is not None and now - at < BALANCE_FRESH_S:
+        balance = cached
+    else:
+        try:
+            balance = dfs.read_balance()
+            _balance_cache["value"], _balance_cache["at"] = balance, now
+        except dfs.DataForSEOError:
+            if cached is None or now - at >= BALANCE_FALLBACK_S:
+                return (
+                    "Visibility data provider temporarily unavailable. Try again in a "
+                    "few minutes - if it persists, contact support@vantagemcp.dev."
+                )
+            balance = cached
     if balance < MIN_BALANCE_USD:
         # Deliberately doesn't include the actual balance figure in a
         # user-facing message - that's internal operational state, not
