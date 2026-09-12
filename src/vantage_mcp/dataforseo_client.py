@@ -11,6 +11,7 @@ import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 
 API = "https://api.dataforseo.com/v3"
@@ -331,6 +332,19 @@ def _page_body(markdown: str) -> str:
     return markdown
 
 
+# A markdown link's URL, for counting a page's outbound links. The provider's
+# markdown is not always well formed: a reference list came back (2026-09-12) as
+# "[Li et al. ...](https://pubmed.ncbi.nl[Nature](https://pubmed.ncbi.nlm.nih.gov/26855425/)gov/26855425/)",
+# a second link spliced into the first URL, and "anything up to )" reported
+# "pubmed.ncbi.nl[Nature](https:" as a linked domain. So a URL here has no
+# whitespace, brackets or angle brackets, and parentheses only as a balanced
+# pair (Wikipedia's "Foo_(bar)"); link text may hold one level of brackets
+# ("[see [1]](...)"). A link breaking those rules is skipped, not guessed at.
+_MD_LINK_URL_RE = re.compile(
+    r"\[(?:[^\[\]]|\[[^\[\]]*\])*\]\((https?://(?:[^\s()\[\]<>]|\([^\s()\[\]<>]*\))+)\)"
+)
+
+
 def page_structure(url: str) -> dict:
     """Same structural read as citation_structure, applied to your own
     page instead of the AI-cited answer, so the two are directly
@@ -351,11 +365,11 @@ def page_structure(url: str) -> dict:
         if item.get("status_code") and item["status_code"] >= 400:
             return {"url": url, "error": f"page returned HTTP {item['status_code']}"}
         markdown = item.get("page_as_markdown") or ""
-        links = re.findall(r"\[[^\]]*\]\((https?://[^)\s]+)\)", markdown)
+        links = _MD_LINK_URL_RE.findall(markdown)
         domains = []
         for link in links:
-            domain = link.split("/")[2] if link.count("/") >= 2 else link
-            if domain not in domains:
+            domain = urllib.parse.urlsplit(link).hostname
+            if domain and domain not in domains:
                 domains.append(domain)
         return {
             "url": url,
