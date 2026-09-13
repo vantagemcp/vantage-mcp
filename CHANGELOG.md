@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.7] - 2026-09-13
+
+### Added
+- `check_prompt_coverage` now reports whether each answer names you, separately from whether it cites you. Each keyword carries `mentioned` (the answer's own text names the domain or brand; domain-only citation links are ignored), and the result adds `keywords_mentioned`, `mentioned_not_cited` (named but not linked) and `mention_terms` (exactly what was looked for). A new optional `brand` argument sets the name to look for; without it the domain's first label is used. It comes from the same provider response, so there is no extra cost. "Cited" and "mentioned" are never merged.
+
+### Fixed
+- Metered calls could be refused with "temporarily unavailable" during a burst of checks even when the provider balance was fine, because every call read the provider's balance endpoint first and that endpoint allows only 6 requests a minute per account. The last good reading is now reused for 5 minutes, and a failed lookup falls back to it while it is under 15 minutes old. The $1 floor still applies to the remembered value, and past 15 minutes it fails closed as before.
+- `analyze_citation_gap` measured your page's opening from the first block of its markdown, which on many pages is the title plus page chrome (related-article cards, jump labels, bylines), so an opening could be reported as 19 words when it was really a heading and a link. Headings, link-only or image-only lines and short labels before the body are now skipped. On the answer side, a first line that only restates the question ("What is coherent breathing?") is no longer counted as the opening; a heading that carries the answer still is.
+- `analyze_citation_gap` could list a broken fragment such as `pubmed.ncbi.nl[Nature](https:` as one of your page's linked domains when the provider's markdown spliced one link inside another. Link URLs are now matched strictly (no whitespace, brackets or angle brackets, parentheses only as a balanced pair), malformed links are skipped, and the domain is read with `urllib.parse.urlsplit`.
+
+### Removed
+- `create_api_key_for_stripe_customer` no longer takes an `email` argument, and the free-to-paid in-place upgrade listed under 1.5.4 is gone from this repository. Both had been carried over from the internal codebase by mistake: this repository has never included the billing side of paid signup. Running the paid Stripe path from this package issues a key that records no email. Free self-serve signup by email is unchanged. The hosted service at vantagemcp.dev is not affected.
+
+### Changed
+- README: the free tier is described as 30 quota units a month (it previously said 3 checks), and documents the named-versus-cited fields and `brand`.
+
 ## [1.5.6] - 2026-09-07
 
 ### Deprecated
