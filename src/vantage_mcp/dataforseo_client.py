@@ -251,6 +251,10 @@ def citation_structure(keyword: str, mention_terms: list[str] | None = None) -> 
         task = res["tasks"][0]
         if task.get("status_code") != 20000:
             return {"keyword": keyword, "error": task.get("status_message")}
+        # The provider can answer status 20000 with "result": null (no answer
+        # produced for this keyword). Say so instead of a NoneType TypeError.
+        if not task.get("result"):
+            return {"keyword": keyword, "error": "provider returned no answer for this keyword (empty result)"}
         result = task["result"][0]
         markdown = result.get("markdown") or ""
         sources = result.get("sources") or []
