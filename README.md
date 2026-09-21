@@ -40,11 +40,6 @@ How much of this billing period's quota is left, before spending any of it.
 Costs 0 units - reads Vantage's own record, never calls the paid data provider.
 > "How many checks do I have left?"
 
-### `check_ai_visibility` — deprecated
-Still works, but costs 10 units for a bare count with no context. Use
-`check_prompt_coverage` (1 unit/keyword) or `analyze_citation_trend`
-(already includes the current count) instead.
-
 ### `check_prompt_coverage`
 Which of several prompts actually cite a specific domain, and which don't - up to 10 keywords in one call. ChatGPT, 1 unit per keyword.
 

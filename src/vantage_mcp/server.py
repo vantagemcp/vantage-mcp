@@ -40,8 +40,8 @@ READ_ONLY_EXTERNAL = ToolAnnotations(
     open_world_hint=True,
 )
 
-# DataForSEO's llm_mentions endpoint family (what check_ai_visibility and
-# find_citation_leaders both call) only ever supports these two - confirmed
+# DataForSEO's llm_mentions endpoint family (what find_citation_leaders
+# and analyze_citation_trend call) only ever supports these two - confirmed
 # directly against their API docs for target_metrics/live and top_domains/
 # live. Perplexity and Gemini were never real: this project's own docs
 # and descriptions claimed them from day one, but DataForSEO would either
@@ -210,7 +210,7 @@ def get_usage() -> dict:
     only reads Vantage's own record of what has been used.
 
     Returns: {"tier", "period" (YYYY-MM), "units_used", "units_limit",
-    "units_remaining"}. check_ai_visibility and find_citation_leaders cost
+    "units_remaining"}. find_citation_leaders costs
     10 units/call; analyze_citation_trend, analyze_citation_structure (and
     its batch form, per keyword), and analyze_citation_gap cost 1.
 
@@ -224,88 +224,6 @@ def get_usage() -> dict:
     tier = tier_from_scopes(token.scopes)
     _log_call("get_usage", "success")
     return store.usage_status(token.client_id, tier)
-
-
-@mcp.tool(annotations=READ_ONLY_EXTERNAL)
-def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
-    """DEPRECATED - still works, but prefer another tool below. Kept callable
-    for anyone already relying on it; not recommended for a new integration.
-
-    Checks how many times a domain is cited in AI-generated answers on a
-    given AI platform (chat_gpt, google), as one bare count with no context.
-
-    Why deprecated: it costs 10 units, the same as find_citation_leaders, for
-    a single number with no time context and no comparison. If you want to
-    know whether a domain shows up in the answers that matter for it, use
-    check_prompt_coverage (1 unit per keyword) - it gives cited/not-cited per
-    keyword, ranked, across as many prompts as you actually care about,
-    for less than the cost of one call here. If you want month-by-month
-    counts, analyze_citation_trend returns them for 1 unit, but they are a
-    different measurement from this total and the two do not match.
-
-    Read-only: no side effects, safe to retry. Costs 10 quota units/call
-    (free tier is 30 units/month shared across every metered tool, so up to 3
-    calls to this tool alone if nothing else is used that period).
-
-    Returns: {"domain", "platform", "mentions_found" (int - how many times
-    the domain was cited in the provider's tracked answers for this
-    platform), "visible" (bool - true if mentions_found > 0)}.
-
-    Use check_prompt_coverage instead for "is my brand cited" across the
-    prompts you actually care about, at a tenth of the cost per check. Use
-    analyze_citation_trend instead for month-by-month counts (a different
-    measurement from this total).
-    Use find_citation_leaders instead if you want a ranked list of who's
-    winning a topic rather than one domain's own count.
-
-    Args:
-        domain: bare domain to check, e.g. "example.com" (no https://, no www).
-        platform: "chat_gpt" or "google" (Google's AI Overview). Defaults
-            to chat_gpt. Perplexity and Gemini aren't available - the
-            underlying data provider doesn't cover them for this check.
-    """
-    if err := _guard_platform(platform):
-        _log_call("check_ai_visibility", "invalid_platform")
-        return {"error": err}
-    if err := _guard_balance():
-        _log_call("check_ai_visibility", "balance_denied")
-        return {"error": err}
-    if err := _guard_usage(10):
-        _log_call("check_ai_visibility", "quota_denied")
-        return {"error": err}
-    try:
-        mentions = dfs.domain_mentions(domain=domain, platform=platform)
-    except dfs.DataForSEOError:
-        _refund_usage(10)
-        _log_call("check_ai_visibility", "provider_error")
-        return {
-            "error": (
-                "Visibility data provider had a transient error on this "
-                "request. Try again - if it keeps failing for this domain/"
-                "platform, contact support@vantagemcp.dev."
-            )
-        }
-    if mentions is None:
-        # domain_mentions() returns None when the provider's response
-        # shape was unexpected, not when it confirmed zero mentions -
-        # those are different answers and shouldn't look the same.
-        _refund_usage(10)
-        _log_call("check_ai_visibility", "unparseable_response")
-        return {
-            "error": (
-                "Couldn't determine visibility for this domain/platform "
-                "(the provider's response wasn't in the expected shape). "
-                "Not the same as confirmed-zero-mentions - try again, or "
-                "contact support@vantagemcp.dev if it persists."
-            )
-        }
-    _log_call("check_ai_visibility", "success")
-    return {
-        "domain": domain,
-        "platform": platform,
-        "mentions_found": mentions,
-        "visible": mentions > 0,
-    }
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
@@ -334,8 +252,7 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
     legitimately disagree on whether a given domain shows up.
 
     Use check_prompt_coverage instead if you already know which domain you
-    care about and just want to know whether it is cited (check_ai_visibility
-    also answers this, but is deprecated - see its own docstring).
+    care about and just want to know whether it is cited.
 
     Args:
         keyword: the topic/query to check, e.g. "best project management tool".

@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-09-21
+
+### Removed
+- `check_ai_visibility` is removed. It was deprecated in 1.5.6, and calls to it now fail as an unknown tool. Use `check_prompt_coverage` (cited or not per keyword, 1 unit per keyword), `find_citation_leaders` with `compare_domain` (the domain's rank among the most-cited domains for a topic, 10 units) or `analyze_citation_trend` (month-by-month counts, 1 unit) instead. `dataforseo_client.domain_mentions`, which only it used, is removed too.
+
+### Fixed
+- Correction to 1.5.6, which said `analyze_citation_trend` already contains the current count that `check_ai_visibility` returned. It does not: they read different provider endpoints. The total from `check_ai_visibility` was roughly half the sum of the monthly counts and matched no single month, and the provider does not document its time window.
+- The `analyze_citation_trend` description no longer calls a zero month "a real measured zero, not a gap". A zero between two large months can be a gap in the provider's history: July 2026 came back as 0 for every large domain we checked while June and August were high.
+
 ## [1.5.7] - 2026-09-13
 
 ### Added

@@ -69,19 +69,6 @@ def _first_group_list(d: dict) -> list:
     return []
 
 
-def domain_mentions(domain: str, platform: str = "chat_gpt") -> int | None:
-    """How many times DataForSEO's tracked corpus cites this domain,
-    on this AI platform. ~$0.10/call."""
-    body = [{"target": [{"domain": domain}], "platform": platform}]
-    res = _call("ai_optimization/llm_mentions/target_metrics/live", body)
-    try:
-        agg = res["tasks"][0]["result"][0]["aggregated_metrics"]
-        group = _first_group_list(agg)
-        return sum(g.get("mentions", 0) for g in group)
-    except Exception:
-        return None
-
-
 def citation_leaders(keyword: str, platform: str = "chat_gpt", limit: int = 5) -> dict:
     """Who dominates AI-answer citations for this keyword/topic, and
     whether the given domain shows up in that list. ~$0.15/call.
@@ -113,8 +100,8 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", limit: int = 5) -
 def citation_trend(domain: str, platform: str = "chat_gpt") -> dict:
     """Month-by-month mention counts for a domain since DataForSEO's
     history began (2025-08-01), oldest to newest. Priced at $0/call on
-    every real call made verifying this - unlike domain_mentions/
-    citation_leaders above, which run ~$0.10-0.15/call. A month with no
+    every real call made verifying this - unlike
+    citation_leaders above, which runs ~$0.15/call. A month with no
     tracked mentions comes back with no "metrics" key at all rather than
     zeros - real behavior found calling this live, not assumed from the
     docs - so that gets normalized to an explicit 0 here rather than
