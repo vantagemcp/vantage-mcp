@@ -239,9 +239,9 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
     know whether a domain shows up in the answers that matter for it, use
     check_prompt_coverage (1 unit per keyword) - it gives cited/not-cited per
     keyword, ranked, across as many prompts as you actually care about,
-    for less than the cost of one call here. If you want the count over
-    time, analyze_citation_trend already returns this same number monthly,
-    including right now, for 1 unit.
+    for less than the cost of one call here. If you want month-by-month
+    counts, analyze_citation_trend returns them for 1 unit, but they are a
+    different measurement from this total and the two do not match.
 
     Read-only: no side effects, safe to retry. Costs 10 quota units/call
     (free tier is 30 units/month shared across every metered tool, so up to 3
@@ -253,7 +253,8 @@ def check_ai_visibility(domain: str, platform: str = "chat_gpt") -> dict:
 
     Use check_prompt_coverage instead for "is my brand cited" across the
     prompts you actually care about, at a tenth of the cost per check. Use
-    analyze_citation_trend instead for this same count with history attached.
+    analyze_citation_trend instead for month-by-month counts (a different
+    measurement from this total).
     Use find_citation_leaders instead if you want a ranked list of who's
     winning a topic rather than one domain's own count.
 
@@ -406,8 +407,10 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
     calls to this tool alone if nothing else is used that period).
 
     Returns: {"domain", "platform", "months" (list of {"year", "month",
-    "mentions" (int, 0 for a month with no tracked citations - a real
-    measured zero, not a gap), "ai_search_volume"}, oldest to newest),
+    "mentions" (int, 0 for a month with no tracked citations. A zero
+    between two large months can be a gap in the provider's history rather
+    than a real drop, so read isolated zeros with care), "ai_search_volume"},
+    oldest to newest),
     "trend": {"direction" ("up"/"down"/"flat"/"no_data"), "earliest_mentions",
     "latest_mentions", "excluded_current_partial_month" (bool, only present
     and true when the most recent calendar month was excluded from the trend
