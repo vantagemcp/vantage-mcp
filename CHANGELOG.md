@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-09-23
+
+### Added
+- `analyze_citation_gap` returns `fix_brief`: the changes to make on your page, most important first (a direct opening, a number, a list, the section count, missing points, a table, sources), ending with a reminder to write in your own words. When every check already matches it returns a single "no structural change indicated" line. The brief is built from the same two provider responses as before, with no extra calls and no LLM on the server; your agent does the rewriting.
+- `analyze_citation_gap` returns `possibly_missing`: section heads from the cited answer whose key words mostly do not appear anywhere on your page. It is word matching, not meaning, so a point covered in other words can be listed; check each before acting on it.
+- `analyze_citation_structure` and both sides of `analyze_citation_gap` return `outline` (up to 12 section heads in order: headings, or top-level list items when there are fewer than two headings; numbering removed, repeats dropped, heads only) and `has_table`.
+
 ## [1.6.0] - 2026-09-21
 
 ### Removed

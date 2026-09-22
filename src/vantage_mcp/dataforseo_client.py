@@ -226,6 +226,50 @@ def _drop_restated_heading(markdown: str, keyword: str) -> str:
     return markdown
 
 
+_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
+_TOP_LIST_ITEM_RE = re.compile(r"^(?:[-*]|\d+\.)\s+(.+)$", re.MULTILINE)
+_NUMBERING_RE = re.compile(r"^(?:step\s+)?\d+[.):]\s*", re.IGNORECASE)
+_BOLD_LEAD_RE = re.compile(r"^\*\*(.+?)\*\*")
+# A markdown table's separator row ("--- | ---", "|:---|---:|").
+_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$", re.MULTILINE)
+_OUTLINE_MAX = 12
+_OUTLINE_ITEM_WORDS = 12
+
+
+def _outline(markdown: str) -> list[str]:
+    """A document's section heads, in order: its headings, or its top-level
+    list items when it has fewer than two headings. Numbering and markdown are
+    removed, each head is cut to _OUTLINE_ITEM_WORDS words and repeats are
+    dropped: the provider has returned an answer with its last section twice
+    (2026-09-23, "7. Measure the right numbers"). Heads only, never the text
+    under them, so this describes someone else's answer without copying it."""
+    heads = _HEADING_RE.findall(markdown)
+    if len(heads) < 2:
+        heads = []
+        for item in _TOP_LIST_ITEM_RE.findall(markdown):
+            bold = _BOLD_LEAD_RE.match(item.strip())
+            heads.append(bold.group(1) if bold else re.split(r":\s| - | = ", item, maxsplit=1)[0])
+    out, seen = [], set()
+    for head in heads:
+        text = _NUMBERING_RE.sub("", strip_markdown(head)).strip(" :-")
+        words = text.split()
+        if not words:
+            continue
+        if len(words) > _OUTLINE_ITEM_WORDS:
+            text = " ".join(words[:_OUTLINE_ITEM_WORDS]) + "..."
+        if text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        out.append(text)
+        if len(out) == _OUTLINE_MAX:
+            break
+    return out
+
+
+def _has_table(markdown: str) -> bool:
+    return bool(_TABLE_SEP_RE.search(markdown))
+
+
 def citation_structure(keyword: str, mention_terms: list[str] | None = None) -> dict:
     """Structural shape of the AI-generated answer actually cited for
     this keyword: does it lead with a list, how long is the opening,
@@ -278,6 +322,8 @@ def citation_structure(keyword: str, mention_terms: list[str] | None = None) -> 
             "keyword": keyword,
             **parsed,
             "detail_preview": detail_preview,
+            "outline": _outline(body_md),
+            "has_table": _has_table(body_md),
             "num_sources_cited": len(domains[:10]),
             "source_domains": domains[:10],
             **({"mentioned": mentions_any(markdown, mention_terms)} if mention_terms else {}),
@@ -292,11 +338,11 @@ def citation_structure(keyword: str, mention_terms: list[str] | None = None) -> 
 # "5 min read". Taking the first block of that as the opening measured the
 # title plus a link to another article, and reported "yours is 19 words" for
 # an opening nobody wrote (found 2026-09-11 by an internal test). Page chrome
-# is skipped line by line until the first line of real content: a heading, a
-# line that is only links or images, and a short label (under
-# _CHROME_MAX_WORDS words, not ending like a sentence) are all chrome. The AI
-# answer is NOT put through this: its first line is the answer, headings
-# included, so that side is measured exactly as before.
+# is skipped line by line until the
+# first line of real content: a heading, a line that is only links or images,
+# and a short label (under _CHROME_MAX_WORDS words, not ending like a sentence)
+# are all chrome. The AI answer is NOT put through this: its first line is the
+# answer, headings included, so that side is measured exactly as before.
 _LINK_OR_IMAGE_RE = re.compile(r"!?\[[^\]]*\]\([^)]*\)")
 _SENTENCE_END_RE = re.compile(r"[.!?:]$")
 _CHROME_MAX_WORDS = 5
@@ -336,40 +382,123 @@ _MD_LINK_URL_RE = re.compile(
 )
 
 
-def page_structure(url: str) -> dict:
-    """Same structural read as citation_structure, applied to your own
-    page instead of the AI-cited answer, so the two are directly
-    comparable. The opening is read from the page body, past the title and
-    page chrome (see _page_body). Outbound links stand in for "sources cited"
-    since a normal webpage has no DataForSEO-supplied source list.
-    ~$0.003/call (on_page/content_parsing, no JS rendering)."""
+def _page_markdown(url: str) -> tuple[str, str | None]:
+    """Your page as the provider's markdown, or ("", error). ~$0.003/call
+    (on_page/content_parsing, no JS rendering)."""
     body = [{"url": url, "markdown_view": True}]
     res = _call("on_page/content_parsing/live", body, timeout=60)
     try:
         task = res["tasks"][0]
         if task.get("status_code") != 20000:
-            return {"url": url, "error": task.get("status_message")}
+            return "", task.get("status_message")
         items = task["result"][0].get("items") or []
         if not items:
-            return {"url": url, "error": "page had no parseable content (crawler found nothing to read)"}
+            return "", "page had no parseable content (crawler found nothing to read)"
         item = items[0]
         if item.get("status_code") and item["status_code"] >= 400:
-            return {"url": url, "error": f"page returned HTTP {item['status_code']}"}
-        markdown = item.get("page_as_markdown") or ""
-        links = _MD_LINK_URL_RE.findall(markdown)
-        domains = []
-        for link in links:
-            domain = urllib.parse.urlsplit(link).hostname
-            if domain and domain not in domains:
-                domains.append(domain)
-        return {
-            "url": url,
-            **_parse_opening(_page_body(markdown)),
-            "num_links_out": len(links),
-            "linked_domains": domains[:10],
-        }
+            return "", f"page returned HTTP {item['status_code']}"
+        return item.get("page_as_markdown") or "", None
+    except Exception as e:
+        return "", str(e)
+
+
+def _page_read(url: str, markdown: str) -> dict:
+    links = _MD_LINK_URL_RE.findall(markdown)
+    domains = []
+    for link in links:
+        domain = urllib.parse.urlsplit(link).hostname
+        if domain and domain not in domains:
+            domains.append(domain)
+    body = _page_body(markdown)
+    return {
+        "url": url,
+        **_parse_opening(body),
+        "outline": _outline(body),
+        "has_table": _has_table(body),
+        "num_links_out": len(links),
+        "linked_domains": domains[:10],
+    }
+
+
+def page_structure(url: str) -> dict:
+    """Same structural read as citation_structure, applied to your own
+    page instead of the AI-cited answer, so the two are directly
+    comparable. The opening is read from the page body, past the title and
+    page chrome (see _page_body). Outbound links stand in for "sources cited"
+    since a normal webpage has no DataForSEO-supplied source list."""
+    markdown, err = _page_markdown(url)
+    if err:
+        return {"url": url, "error": err}
+    try:
+        return _page_read(url, markdown)
     except Exception as e:
         return {"url": url, "error": str(e)}
+
+
+# Words that say nothing about WHAT a section covers ("Find out why...",
+# "Build an early-warning system"), ignored when checking whether your page
+# covers a point the cited answer makes.
+_COVERAGE_STOPWORDS = _RESTATE_FILLER | {
+    "find", "out", "get", "make", "build", "use", "using", "set", "right", "fast", "faster",
+    "early", "don", "t", "can", "should", "will", "more", "most", "less", "best", "top",
+    "way", "tip", "step", "before", "after", "when", "where", "which", "that", "this", "these",
+    "not", "no", "from", "into", "than", "then", "they", "their", "our", "we", "my", "at",
+    "by", "be", "or", "as", "if", "so", "up", "about", "who", "key", "good", "new", "practical",
+    "approach", "simple", "quick", "common", "important", "thing",
+}
+
+
+def _possibly_missing(outline: list[str], page_words: set[str], keyword: str) -> list[str]:
+    """Heads of the cited answer whose distinctive words mostly do not appear
+    anywhere on your page. Word overlap, not meaning: a point covered in other
+    words reads as missing, so this is a list to check, not a verdict."""
+    skip = _norm_words(keyword) | _COVERAGE_STOPWORDS
+    missing = []
+    for head in outline:
+        key = {w for w in _norm_words(head) - skip if len(w) > 2}
+        if key and len(key & page_words) * 2 < len(key):
+            missing.append(head)
+    return missing
+
+
+def _fix_brief(keyword: str, winning: dict, yours: dict, missing: list[str]) -> list[str]:
+    """What to change on your page, most important first, as instructions the
+    calling agent can carry out. Only checks that failed produce a line."""
+    brief = []
+    w_open, y_open = winning["opening_word_count"], yours["opening_word_count"]
+    if w_open > 0 and y_open > w_open * 2:
+        brief.append(
+            f'Rewrite your opening as a direct answer to "{keyword}" in no more than '
+            f"{max(w_open, 20)} words, before any background. The cited answer gets to the "
+            f"point in {w_open} words; yours takes {y_open}."
+        )
+    if winning["opening_has_number"] and not yours["opening_has_number"]:
+        brief.append("Put one concrete number in the opening (a figure, a timeframe or a count), as the cited answer does.")
+    if winning["leads_with_list"] and not yours["leads_with_list"]:
+        brief.append("Follow the opening straight away with a list, not paragraphs; the cited answer leads with one.")
+    n_w, n_y = len(winning["outline"]), len(yours["outline"])
+    if n_w >= 3 and n_y * 2 < n_w:
+        brief.append(
+            f"Break the page into about {n_w} sections, each under a heading that names one action "
+            f"or answer; the cited answer has {n_w}, your page has {n_y}."
+        )
+    if missing:
+        brief.append(
+            "Add coverage for these points the cited answer makes, which your page does not appear "
+            "to cover (check each, since this is word matching): " + "; ".join(missing) + "."
+        )
+    if winning["has_table"] and not yours["has_table"]:
+        brief.append("Add a table; the cited answer uses one to lay options out side by side.")
+    if winning["num_sources_cited"] > yours["num_links_out"]:
+        brief.append(
+            f"Cite at least {winning['num_sources_cited']} reputable external sources, linked next to "
+            f"the claims they support; your page links out to {yours['num_links_out']}."
+        )
+    if not brief:
+        return ["No structural change indicated: your page already matches the cited answer on "
+                "every check here, so the gap is more likely authority or freshness than shape."]
+    brief.append("Write every change in your own words from your own facts; do not copy the cited answer's wording.")
+    return brief
 
 
 def citation_gap(keyword: str, your_url: str) -> dict:
@@ -379,9 +508,15 @@ def citation_gap(keyword: str, your_url: str) -> dict:
     winning = citation_structure(keyword)
     if winning.get("error"):
         return {"keyword": keyword, "your_url": your_url, "error": f"couldn't analyze the winning answer: {winning['error']}"}
-    yours = page_structure(your_url)
-    if yours.get("error"):
-        return {"keyword": keyword, "your_url": your_url, "error": f"couldn't fetch/parse your_url: {yours['error']}"}
+    markdown, err = _page_markdown(your_url)
+    if err:
+        return {"keyword": keyword, "your_url": your_url, "error": f"couldn't fetch/parse your_url: {err}"}
+    try:
+        yours = _page_read(your_url, markdown)
+    except Exception as e:
+        return {"keyword": keyword, "your_url": your_url, "error": f"couldn't fetch/parse your_url: {e}"}
+    page_words = _norm_words(strip_markdown(_page_body(markdown)))
+    missing = _possibly_missing(winning["outline"], page_words, keyword)
 
     gaps = []
     if winning["leads_with_list"] and not yours["leads_with_list"]:
@@ -398,4 +533,8 @@ def citation_gap(keyword: str, your_url: str) -> dict:
             f"Winning answer cites {winning['num_sources_cited']} sources; "
             f"your page links out to {yours['num_links_out']}."
         )
-    return {"keyword": keyword, "your_url": your_url, "winning": winning, "yours": yours, "gaps": gaps}
+    return {
+        "keyword": keyword, "your_url": your_url, "winning": winning, "yours": yours, "gaps": gaps,
+        "possibly_missing": missing,
+        "fix_brief": _fix_brief(keyword, winning, yours, missing),
+    }

@@ -63,7 +63,7 @@ Same as `analyze_citation_structure`, across up to 10 related topics in one call
 > "What do winning answers look like across this whole topic cluster?"
 
 ### `analyze_citation_gap`
-Diffs your own page's structure against the winning AI-cited answer for the same keyword, so you get concrete gaps to close instead of just the winner's shape.
+Diffs your own page's structure against the winning AI-cited answer for the same keyword and returns a `fix_brief`: ordered rewrite instructions your agent can carry out on the page (opening, sections, the answer's points your page does not cover, table, sources). The brief never contains the cited answer's text.
 > "What should I actually change on this page to get cited?"
 
 ## Example

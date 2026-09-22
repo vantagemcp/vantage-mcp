@@ -412,7 +412,10 @@ def analyze_citation_structure(keyword: str) -> dict:
     calls to this tool alone if nothing else is used that period).
 
     Returns: {"keyword", "leads_with_list" (bool), "opening_word_count"
-    (int), "opening_has_number" (bool), "num_sources_cited" (int),
+    (int), "opening_has_number" (bool), "outline" (list of up to 12 section
+    heads, in order: the answer's headings, or its top-level list items when it
+    has fewer than two headings; heads only, never the text under them),
+    "has_table" (bool), "num_sources_cited" (int),
     "source_domains" (list of up to 10 domain strings)}.
 
     Use analyze_citation_structure_batch instead if you need this for more than
@@ -665,10 +668,12 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def analyze_citation_gap(keyword: str, your_url: str) -> dict:
     """Compare your own page's structure against the AI-generated answer
-    actually cited for this keyword, and return concrete gaps to close
-    instead of just describing the winner. Use this to answer 'what
-    should I change on this page to get cited' rather than only 'what
-    does a winning answer look like'.
+    actually cited for this keyword, and return a fix brief: ordered
+    rewrite instructions for your page, not just a description of the
+    winner. Use this to answer 'what should I change on this page to get
+    cited' rather than only 'what does a winning answer look like'. Carry
+    out the fix_brief on the user's page in their own words; it never
+    contains the cited answer's text.
 
     Read-only: no side effects, safe to retry. Costs 1 quota unit/call
     (free tier is 30 units/month shared across every metered tool, so up to 30
@@ -676,10 +681,16 @@ def analyze_citation_gap(keyword: str, your_url: str) -> dict:
 
     Returns: {"keyword", "your_url", "winning" (structure of the
     AI-cited answer, same shape as analyze_citation_structure), "yours"
-    (same structure computed for your_url, "num_links_out"/
-    "linked_domains" standing in for source count), "gaps" (list of
-    plain-English differences worth acting on)}, or {"error"} if either
-    side couldn't be fetched/parsed.
+    (same structure computed for your_url, including its own "outline" and
+    "has_table", with "num_links_out"/"linked_domains" standing in for
+    source count), "gaps" (list of plain-English differences worth acting
+    on), "possibly_missing" (heads from the winning outline whose key words
+    mostly do not appear on your page; word matching, so check each before
+    adding it), "fix_brief" (list of instructions, most important first:
+    opening, number, list, sections, missing points, table, sources, then a
+    reminder to write in your own words; a single "no structural change
+    indicated" line when every check already matches)}, or {"error"} if
+    either side couldn't be fetched/parsed.
 
     Use analyze_citation_structure instead if you just want the winning
     answer's shape, not a comparison against your own page. Use
