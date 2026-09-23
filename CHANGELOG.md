@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.1] - 2026-09-24
+
+### Fixed
+- A provider reply with no task at all (`"tasks": null`, a whole-request failure such as a rate limit) is now a transient error that is refunded and reported plainly, instead of an exception raised through the live-answer tools. It came with the 1.8.0 engine refactor and crashed the first monthly research run.
+
+### Added
+- **A page for every research question**: `vantagemcp.dev/research/<question>` lists the sites ChatGPT, Gemini and Perplexity cited, which sites more than one engine shares, and what changed since the previous month. All are in the sitemap and linked from /research.
+- **Month-on-month changes on /research**: change markers on the headline numbers and engine comparisons, a finding for the biggest shift, and a "new" tag on sites entering each engine's top list, from the second edition on.
+- **An account page** at vantagemcp.dev/account: enter an API key to see the plan, this month's usage and the saved `check_prompt_coverage` results. The key is only posted, never shown back, and nothing is cached or stored in the browser.
+- **A public changelog** at vantagemcp.dev/changelog, built from this file.
+- The monthly research job records why any answer failed and will not publish a month where more than half the answers failed.
+
 ## [1.8.0] - 2026-09-24
 
 ### Added
