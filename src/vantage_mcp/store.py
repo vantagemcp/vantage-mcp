@@ -423,6 +423,16 @@ def check_history(client_id: str, domain: str, keyword: str | None = None, limit
     return [dict(zip(_CHECK_COLS, r)) for r in rows]
 
 
+def recent_checks(client_id: str, limit: int = 25) -> list[dict]:
+    """This key's saved results across every domain, newest first (the
+    account page)."""
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            f"SELECT {', '.join(_CHECK_COLS)} FROM checks WHERE client_id = ? ORDER BY checked_at DESC LIMIT ?",
+            (client_id, limit)).fetchall()
+    return [dict(zip(_CHECK_COLS, r)) for r in rows]
+
+
 def refund(client_id: str, cost: int) -> None:
     """Hand back `cost` units charged by check_and_consume for a call that
     turned out not to deliver a usable result.

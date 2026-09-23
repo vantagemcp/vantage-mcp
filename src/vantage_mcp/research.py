@@ -159,13 +159,59 @@ def next_edition(month: str) -> str:
     return datetime(y, m, 1).strftime("1 %B %Y")
 
 
-def _findings(agg: dict) -> list[str]:
+def slug(keyword: str) -> str:
+    return keyword.strip().lower().replace(" ", "-")
+
+
+def _month_label(month: str, fmt: str = "%B %Y") -> str:
+    return datetime.strptime(month, "%Y-%m").strftime(fmt)
+
+
+def _delta(now: float, before: float | None, unit: str, since: str) -> str:
+    """A small change marker against last month, or nothing on a first edition.
+    Neutral ink on purpose: up is not good or bad for any of these numbers."""
+    if before is None:
+        return ""
+    diff = round(now - before, 1)
+    if diff == 0:
+        return f"<span class='rs-delta'>no change vs {since}</span>"
+    arrow = "&#9650;" if diff > 0 else "&#9660;"
+    return f"<span class='rs-delta'>{arrow} {abs(diff):g}{unit} vs {since}</span>"
+
+
+def _mini_delta(now: float, before: float | None) -> str:
+    """The compact form for a bar's value column: arrow and size only."""
+    if before is None:
+        return ""
+    diff = round(now - before, 1)
+    text = "=" if diff == 0 else ("&#9650;" if diff > 0 else "&#9660;") + f"{abs(diff):g}"
+    return f"<span class='rs-delta' title='change since last month'>{text}</span>"
+
+
+def _dig(d: dict, path: tuple):
+    for key in path:
+        if not isinstance(d, dict) or key not in d:
+            return None
+        d = d[key]
+    return d
+
+
+def _findings(agg: dict, prev: dict | None = None) -> list[str]:
     """Plain sentences computed from this month's numbers, so the page never
     claims something the data does not show."""
     esc = html.escape
     be, eng = agg["by_engine"], agg["engines"]
     label = lambda e: ENGINE_LABELS.get(e, e)  # noqa: E731
     out = []
+    if prev:
+        since = _month_label(prev["month"], "%B")
+        moves = [(e, prev["by_engine"][e]["community_pct"], be[e]["community_pct"]) for e in eng
+                 if e in prev["by_engine"]]
+        if moves:
+            e, was, now = max(moves, key=lambda m: abs(m[2] - m[1]))
+            if now != was:
+                out.append(f"<strong>Community share on {label(e)} {'rose' if now > was else 'fell'}</strong> "
+                           f"from {was:g}% in {since} to {now:g}%.")
     most = max(eng, key=lambda e: be[e]["avg_sources"])
     least = min(eng, key=lambda e: be[e]["avg_sources"])
     if most != least:
@@ -190,28 +236,47 @@ def _findings(agg: dict) -> list[str]:
     return out
 
 
-def render(agg: dict, base_url: str) -> tuple[str, str, str]:
-    """(title, body_html, head_extra) for the research page."""
+def _questions(data: dict) -> dict[str, list[str]]:
+    """Every question in the dataset, by topic, in keyword-file order."""
+    out: dict[str, list[str]] = {}
+    for a in data["answers"]:
+        qs = out.setdefault(a["category"], [])
+        if a["keyword"] not in qs:
+            qs.append(a["keyword"])
+    return out
+
+
+def render(agg: dict, base_url: str, prev: dict | None = None, questions: dict | None = None) -> tuple[str, str, str]:
+    """(title, body_html, head_extra) for the research page. `prev` is last
+    month's aggregate when there is one (change markers); `questions` maps
+    topic -> keywords for the index of per-question pages."""
     esc = html.escape
-    month = datetime.strptime(agg["month"], "%Y-%m").strftime("%B %Y")
+    month = _month_label(agg["month"])
     nxt = next_edition(agg["month"])
     o, be, eng = agg["overall"], agg["by_engine"], agg["engines"]
     label = lambda e: ENGINE_LABELS.get(e, e)  # noqa: E731
     dot = lambda e: f"<span class='rs-dot' style='--c:{ENGINE_COLORS.get(e, '#888')}'></span>"  # noqa: E731
+    since = _month_label(prev["month"], "%B") if prev else ""
+    pv = lambda path: None if not prev else _dig(prev, path)  # noqa: E731
 
     top = o["top_domains"][0] if o["top_domains"] else {"domain": "-", "answers": 0}
+    prev_top = (prev["overall"]["top_domains"][0]["domain"] if prev and prev["overall"]["top_domains"] else None)
     tiles = [
-        (f"{o['answers']}", "AI answers measured", f"{agg['keywords']} questions, 3 engines"),
-        (f"{o['community_pct']:g}%", "of cited sites are community sites", "Reddit, YouTube, Quora and similar"),
-        (f"{agg['pct_engines_share_a_source']:g}%", "of questions where all three agree", "on at least one source"),
-        (esc(top["domain"]), "cited most across all engines", f"in {top['answers']} answers"),
+        (f"{o['answers']}", "AI answers measured", f"{agg['keywords']} questions, 3 engines", ""),
+        (f"{o['community_pct']:g}%", "of cited sites are community sites", "Reddit, YouTube, Quora and similar",
+         _delta(o["community_pct"], pv(("overall", "community_pct")), " pts", since)),
+        (f"{agg['pct_engines_share_a_source']:g}%", "of questions where all three agree", "on at least one source",
+         _delta(agg["pct_engines_share_a_source"], pv(("pct_engines_share_a_source",)), " pts", since)),
+        (esc(top["domain"]), "cited most across all engines", f"in {top['answers']} answers",
+         (f"<span class='rs-delta'>{'same as' if prev_top == top['domain'] else 'was ' + esc(prev_top) + ' in'} "
+          f"{since}</span>") if prev_top else ""),
     ]
     # The last tile holds a domain, not a number: smaller type so it never breaks mid-name.
     kpis = "".join(f"<div class='rs-kpi'><div class='rs-kpi-val{' text' if i == 3 else ''}'>{v}</div>"
-                   f"<div class='rs-kpi-lbl'>{l}</div><div class='rs-kpi-sub'>{s}</div></div>"
-                   for i, (v, l, s) in enumerate(tiles))
+                   f"<div class='rs-kpi-lbl'>{l}</div><div class='rs-kpi-sub'>{s}</div>{d}</div>"
+                   for i, (v, l, s, d) in enumerate(tiles))
 
-    findings = "".join(f"<li>{f}</li>" for f in _findings(agg))
+    findings = "".join(f"<li>{f}</li>" for f in _findings(agg, prev))
 
     metrics = [("Sites cited per answer", "avg_sources", "", "when any are cited"),
                ("Community share", "community_pct", "%", "of the sites each engine cites"),
@@ -224,16 +289,21 @@ def render(agg: dict, base_url: str) -> tuple[str, str, str]:
             f"<div class='rs-bar-row'><span class='rs-bar-name'>{dot(e)}{label(e)}</span>"
             f"<span class='rs-bar-track'><span class='rs-bar' style='width:{max(be[e][key] / vmax * 100, 1.5):.1f}%;"
             f"--c:{ENGINE_COLORS.get(e, '#888')}'></span></span>"
-            f"<span class='rs-bar-val'>{be[e][key]:g}{unit}</span></div>" for e in eng)
+            f"<span class='rs-bar-val'>{be[e][key]:g}{unit}{_mini_delta(be[e][key], pv(('by_engine', e, key)))}"
+            f"</span></div>" for e in eng)
         cards += f"<div class='rs-card'><h3>{title}</h3><p class='rs-card-sub'>{sub}</p>{rows}</div>"
 
     smax = max((t["answers"] for e in eng for t in be[e]["top_domains"][:8]), default=1)
     site_cols = ""
     for e in eng:
+        prev_sites = ({t["domain"] for t in prev["by_engine"][e]["top_domains"][:8]}
+                      if prev and e in prev["by_engine"] else None)
         rows = "".join(
             f"<li><span class='rs-site'><span class='rs-site-name' title='{esc(t['domain'], quote=True)}'>"
             f"{esc(t['domain'])}</span>"
-            + ("<span class='rs-tag'>community</span>" if dfs.is_community(t["domain"]) else "") + "</span>"
+            + ("<span class='rs-tag'>community</span>" if dfs.is_community(t["domain"]) else "")
+            + ("<span class='rs-tag rs-tag-new'>new</span>" if prev_sites is not None and t["domain"] not in prev_sites
+               else "") + "</span>"
             f"<span class='rs-bar-track'><span class='rs-bar' style='width:{t['answers'] / smax * 100:.1f}%;"
             f"--c:{ENGINE_COLORS.get(e, '#888')}'></span></span><span class='rs-bar-val'>{t['answers']}</span></li>"
             for t in be[e]["top_domains"][:8])
@@ -270,7 +340,7 @@ def render(agg: dict, base_url: str) -> tuple[str, str, str]:
 <h1>What AI answer engines cite</h1>
 <p class="rs-lede">We ask ChatGPT, Gemini and Perplexity the same {agg['keywords']} everyday questions every month
 and record which websites their answers cite. Here is what {esc(month)} looked like.</p>
-<p class="rs-badges"><span class="rs-badge">Updated monthly</span><span class="rs-badge">Next edition {esc(nxt)}</span>
+<p class="rs-badges"><span class="rs-badge">Updated monthly</span>{'' if prev else '<span class="rs-badge">First edition</span>'}<span class="rs-badge">Next edition {esc(nxt)}</span>
 <a class="rs-badge rs-badge-link" href="{base_url}/research/data.json">Download the data (JSON)</a></p>
 </header>
 
@@ -281,7 +351,7 @@ and record which websites their answers cite. Here is what {esc(month)} looked l
 <section class="rs-section"><h2>How the engines compare</h2>
 <p class="rs-legend">{legend}</p>
 <div class="rs-grid rs-grid-2">{cards}</div>
-<p class="rs-note">Each bar is scaled to the highest value in its own panel; the number beside it is the actual value.</p></section>
+<p class="rs-note">Each bar is scaled to the highest value in its own panel; the number beside it is the actual value{', with the change since ' + since + ' underneath (percentage points for shares)' if prev else ''}.</p></section>
 
 <section class="rs-section"><h2>Where each engine gets its answers</h2>
 <p class="rs-card-sub">The sites each engine cites most, by the number of answers citing them. All three panels share one scale.</p>
@@ -297,6 +367,8 @@ least one of the same sites: <strong>{n_agree} of {agg['keywords_compared']}</st
 <section class="rs-section"><h2>Community share by topic</h2>
 <p class="rs-card-sub">Share of each engine's cited sites that are community sites, per topic. Darker is higher.</p>
 {heat}</section>
+
+{_question_index(questions or {}, base_url)}
 
 <section class="rs-section rs-cta">
 <h2>How does your site do?</h2>
@@ -332,6 +404,131 @@ pages are cited. Answers change from run to run, so treat single rows as a snaps
             f'<link rel="canonical" href="{base_url}/research">\n'
             f'<script type="application/ld+json">{json.dumps(dataset)}</script>')
     return f"What AI answer engines cite, {month}", body, head
+
+
+def _question_index(questions: dict[str, list[str]], base_url: str) -> str:
+    """Every question, by topic, linking to its own page: the internal links
+    that let a crawler reach all of them from /research."""
+    if not questions:
+        return ""
+    groups = "".join(
+        f"<details class='rs-topic'><summary>{html.escape(c.capitalize())} <span>{len(qs)}</span></summary><ul>"
+        + "".join(f"<li><a href='{base_url}/research/{slug(q)}'>{html.escape(q)}</a></li>" for q in qs)
+        + "</ul></details>" for c, qs in sorted(questions.items()))
+    total = sum(len(q) for q in questions.values())
+    return (f"<section class='rs-section'><h2>All {total} questions</h2><p class='rs-card-sub'>Each question has its "
+            f"own page: which sites every engine cited, where they overlap, and what changed since last month.</p>"
+            f"<div class='rs-topics'>{groups}</div></section>")
+
+
+def render_question(data: dict, question_slug: str, base_url: str,
+                    prev_data: dict | None = None) -> tuple[str, str, str] | None:
+    """(title, body_html, head_extra) for one question's page, or None if the
+    slug is not in this month's set."""
+    esc = html.escape
+    kw = next((a["keyword"] for a in data["answers"] if slug(a["keyword"]) == question_slug), None)
+    if kw is None:
+        return None
+    eng = data["engines"]
+    label = lambda e: ENGINE_LABELS.get(e, e)  # noqa: E731
+    dot = lambda e: f"<span class='rs-dot' style='--c:{ENGINE_COLORS.get(e, '#888')}' title='{label(e)}'></span>"  # noqa: E731
+    month = _month_label(data["month"])
+    rows = {a["engine"]: a for a in data["answers"] if a["keyword"] == kw}
+    category = next(iter(rows.values()))["category"]
+    sites = {e: [] if r.get("error") else list(dict.fromkeys(_bare(d) for d in r["source_domains"]))
+             for e, r in rows.items()}
+    cited_by: dict[str, list[str]] = {}
+    for e in eng:
+        for d in sites.get(e, []):
+            cited_by.setdefault(d, []).append(e)
+    shared_all = [d for d, es in cited_by.items() if len(es) == len(eng)]
+    shared_some = [d for d, es in cited_by.items() if 1 < len(es) < len(eng)]
+
+    def count(e):
+        r = rows.get(e)
+        return "no answer" if not r or r.get("error") else f"{len(sites[e])} {'site' if len(sites[e]) == 1 else 'sites'}"
+    summary = (", ".join(f"{label(e)} cited {count(e)}" for e in eng) + ". "
+               + (f"{len(shared_all)} {'site was' if len(shared_all) == 1 else 'sites were'} cited by all three."
+                  if shared_all else "No site was cited by all three."))
+
+    prev_rows = ({a["engine"]: a for a in prev_data["answers"] if a["keyword"] == kw and not a.get("error")}
+                 if prev_data else {})
+    since = _month_label(prev_data["month"], "%B") if prev_data else ""
+
+    cards = ""
+    for e in eng:
+        r = rows.get(e)
+        if not r or r.get("error"):
+            inner = "<p class='rs-card-sub'>No answer could be measured this month.</p>"
+        elif not sites[e]:
+            inner = "<p class='rs-card-sub'>Answered from what the model already knows: no sites cited.</p>"
+        else:
+            items = "".join(
+                f"<li><span class='rs-site-name'>{esc(d)}</span>"
+                + ("<span class='rs-tag'>community</span>" if dfs.is_community(d) else "")
+                + f"<span class='rs-also'>{''.join(dot(o) for o in cited_by[d] if o != e)}</span></li>"
+                for d in sites[e][:10])
+            inner = f"<ol class='rs-qsites'>{items}</ol>"
+        facts = [] if not r or r.get("error") else [
+            "opens with a list" if r["leads_with_list"] else "opens with a sentence",
+            "has a table" if r["has_table"] else "no table", f"opening {r['opening_word_count']} words"]
+        change = ""
+        if e in prev_rows and r and not r.get("error"):
+            before = {_bare(d) for d in prev_rows[e]["source_domains"]}
+            new = [d for d in sites[e] if d not in before]
+            gone = sorted(before - set(sites[e]))
+            if new or gone:
+                change = ("<p class='rs-change'>Since " + since + ": "
+                          + (f"<strong>new</strong> {esc(', '.join(new[:4]))}" if new else "")
+                          + ("; " if new and gone else "")
+                          + (f"<strong>dropped</strong> {esc(', '.join(gone[:4]))}" if gone else "") + "</p>")
+            else:
+                change = f"<p class='rs-change'>Same sites as {since}.</p>"
+        cards += (f"<div class='rs-card'><h3>{dot(e)}{label(e)}</h3>"
+                  f"<p class='rs-card-sub'>{count(e)}{' &middot; ' + ' &middot; '.join(facts) if facts else ''}</p>"
+                  f"{inner}{change}</div>")
+
+    overlap = ""
+    if shared_all or shared_some:
+        chips = "".join(f"<li>{''.join(dot(e) for e in cited_by[d])}<span>{esc(d)}</span></li>"
+                        for d in shared_all + shared_some)
+        overlap = (f"<section class='rs-section'><h2>Cited by more than one engine</h2>"
+                   f"<ul class='rs-chips'>{chips}</ul></section>")
+
+    siblings = [a["keyword"] for a in data["answers"] if a["category"] == category and a["engine"] == eng[0]
+                and a["keyword"] != kw][:8]
+    more = "".join(f"<li><a href='{base_url}/research/{slug(q)}'>{esc(q)}</a></li>" for q in siblings)
+    question_text = f"Which websites do AI answer engines cite for “{kw}”?"
+
+    body = f"""<header class="rs-hero">
+<p class="rs-eyebrow"><a href="{base_url}/research">Vantage research</a> &middot; {esc(month)} &middot; {esc(category)}</p>
+<h1>What AI cites for &ldquo;{esc(kw)}&rdquo;</h1>
+<p class="rs-lede">{esc(summary)}</p>
+<p class="rs-badges"><span class="rs-badge">Updated monthly</span><span class="rs-badge">Next edition {esc(next_edition(data['month']))}</span></p>
+</header>
+<p class="rs-legend">{''.join(f"<span class='rs-legend-item'>{dot(e)}{label(e)}</span>" for e in eng)}
+<span class='rs-legend-item rs-muted'>dots beside a site: the other engines that cite it too</span></p>
+<section class="rs-section"><div class="rs-grid rs-grid-3">{cards}</div></section>
+{overlap}
+<section class="rs-section rs-cta"><h2>Is your site one of them?</h2>
+<p>Ask your AI agent to run Vantage's <code>check_prompt_coverage</code> for your domain and &ldquo;{esc(kw)}&rdquo;, on all
+three engines, and it will tell you whether you are cited, who is instead, and what changed since your last check.</p>
+<p class="rs-cta-btns"><a class="btn btn-primary" href="{base_url}/docs/">See the tools</a>
+<a class="btn btn-ghost" href="{base_url}/research">All results for {esc(month)}</a></p></section>
+<section class="rs-section"><h2>More {esc(category)} questions</h2><ul class="rs-more">{more}</ul></section>
+<p class="rs-note">Each engine was asked once, in English, as from the United States, on {esc(data['generated_at'][:10])}.
+Answers change from run to run, so read this as a snapshot. <a href="{base_url}/research/data.json">Download the data</a>.</p>"""
+
+    ld = {"@context": "https://schema.org", "@type": "QAPage",
+          "mainEntity": {"@type": "Question", "name": question_text, "answerCount": 1,
+                         "dateCreated": data["generated_at"][:10],
+                         "acceptedAnswer": {"@type": "Answer", "text": summary,
+                                            "url": f"{base_url}/research/{question_slug}",
+                                            "author": {"@type": "Organization", "name": "Vantage"}}}}
+    head = (f'<meta name="description" content="{esc(summary[:155], quote=True)}">\n'
+            f'<link rel="canonical" href="{base_url}/research/{question_slug}">\n'
+            f'<script type="application/ld+json">{json.dumps(ld)}</script>')
+    return f"What AI cites for “{kw}”, {month}", body, head
 
 
 RESEARCH_CSS = """
@@ -406,6 +603,34 @@ main.check-main > .wrap { max-width: 1060px; }
 .rs-method { border-top: 1px solid var(--line); padding: 1.2rem 0 0; margin: 0 0 1rem; color: var(--muted); }
 .rs-method summary { cursor: pointer; color: var(--ink-2); font-weight: 500; }
 .rs-method p { margin-top: 0.8rem; line-height: 1.65; }
+.rs-delta { display: block; margin-top: 0.35rem; font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted); }
+.rs-bar-val .rs-delta { margin-top: 0.1rem; font-size: 0.66rem; white-space: nowrap; }
+.rs-tag-new { color: var(--primary); border-color: color-mix(in oklch, var(--primary) 45%, transparent); }
+.rs-eyebrow a { color: inherit; text-decoration: none; }
+.rs-eyebrow a:hover, .rs-eyebrow a:focus-visible { text-decoration: underline; }
+.rs-topics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.6rem; }
+.rs-topic { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem 1rem; }
+.rs-topic summary { cursor: pointer; color: var(--ink); font-weight: 500; }
+.rs-topic summary span { color: var(--muted); font-family: var(--font-mono); font-size: 0.8rem; margin-left: 0.3rem; }
+.rs-topic ul, .rs-more { margin: 0.6rem 0 0.2rem; padding-left: 1.1rem; columns: 1; }
+.rs-topic li, .rs-more li { padding: 0.18rem 0; }
+.rs-topic a, .rs-more a { color: var(--ink-2); text-decoration-color: var(--line-strong); }
+.rs-topic a:hover, .rs-more a:hover { color: var(--primary); }
+.rs-more { columns: 2; }
+.rs-qsites { margin: 0; padding-left: 1.3rem; }
+.rs-qsites li { padding: 0.25rem 0; }
+.rs-qsites .rs-site-name { color: var(--ink-2); }
+.rs-qsites .rs-tag { margin-left: 0.35rem; }
+.rs-also { display: inline-flex; gap: 3px; margin-left: 0.45rem; vertical-align: middle; }
+.rs-also .rs-dot { width: 0.55rem; height: 0.55rem; }
+.rs-change { font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 0.6rem; margin: 0.8rem 0 0; }
+.rs-change strong { color: var(--ink-2); font-weight: 600; }
+.rs-chips { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.rs-chips li { display: inline-flex; align-items: center; gap: 0.3rem; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 999px; padding: 0.35rem 0.8rem; color: var(--ink-2); font-size: 0.9rem; }
+.rs-chips li span { margin-left: 0.3rem; }
+.rs-muted { color: var(--muted); }
+@media (max-width: 640px) { .rs-topics { grid-template-columns: 1fr; } .rs-more { columns: 1; } }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @media (max-width: 860px) { .rs-kpis { grid-template-columns: repeat(2, 1fr); } .rs-grid-3 { grid-template-columns: 1fr; } }
 @media (max-width: 640px) { .rs-grid-2, .rs-findings { grid-template-columns: 1fr; }
