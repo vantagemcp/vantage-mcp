@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] - 2026-09-24
+
+### Added
+- **OAuth sign-in.** Clients that support MCP authorization can connect with no key: Vantage now serves OAuth discovery, dynamic client registration, `/authorize` and `/token` (PKCE, S256). The consent page creates a free account from an email, or signs in with an existing API key; an email that already has an account cannot sign in on its own. The access token issued is an ordinary Vantage API key, so metering and plans are unchanged, and existing keys keep working exactly as before. The server card's Authorization header is now optional.
+- **Gemini and Perplexity.** `engine` (`chat_gpt` default, `gemini`, `perplexity`) on `check_prompt_coverage`, `analyze_citation_structure`, `analyze_citation_structure_batch` and `analyze_citation_gap`. ChatGPT and Gemini are read as a person sees them in those apps; Perplexity through its sonar API with web search. 1 unit, like ChatGPT.
+- **Multiple samples.** `samples` (1 to 5) on `check_prompt_coverage` and `analyze_citation_structure`: independent answers fetched in parallel, 1 unit each. Coverage reports `cited_runs` and `samples_ok`, and `cited` means cited in at least half; both return `source_frequency`. Answers change from run to run, so this turns a single yes or no into a rate.
+- **Provenance.** Every live answer carries `model` and `checked_at`.
+- **Remembered results.** On the hosted endpoint `check_prompt_coverage` keeps each keyword's result for 180 days against the API key and returns `previous` and `change` (`first_check`, `up`, `down`, `same`), plus `newly_cited` and `no_longer_cited`. New tool `get_check_history` reads it back (0 units).
+- **`find_cited_questions`.** Starts from a domain: the tracked questions whose AI answers cite it, most asked first, with position, other cited sites and last seen (10 units; ChatGPT data is United States English only, Google AI Overview elsewhere).
+- **Monthly research.** `research.py` asks the same 200 questions of all three engines each month and publishes the measurements at vantagemcp.dev/research, with the dataset at /research/data.json.
+
 ## [1.7.0] - 2026-09-24
 
 ### Added

@@ -4,7 +4,7 @@
 
 Know if AI actually cites you.
 
-Vantage is an MCP server that checks whether ChatGPT and Google's AI Overview cite your brand, callable directly from Claude Code, Cursor, or any MCP client. No dashboard to interpret, just a straight answer.
+Vantage is an MCP server that checks whether ChatGPT, Gemini, Perplexity and Google's AI Overview cite your brand, for which questions, and whether that is changing, callable directly from Claude Code, Cursor, or any MCP client. No dashboard to interpret, just a straight answer.
 
 ## Try it without installing anything
 
@@ -18,7 +18,7 @@ Published on the [Official MCP Registry](https://registry.modelcontextprotocol.i
 
 ## Install
 
-Add to your MCP client config:
+If your client supports MCP sign-in (OAuth), add `https://vantagemcp.dev/mcp` with no key and sign in: a free account from your email, or an existing key. Otherwise add to your MCP client config:
 
 ```json
 {
@@ -40,11 +40,19 @@ How much of this billing period's quota is left, before spending any of it.
 Costs 0 units - reads Vantage's own record, never calls the paid data provider.
 > "How many checks do I have left?"
 
+### `find_cited_questions`
+Starts from your domain instead of a keyword: the questions where AI answers already cite it, most asked first. 10 units.
+> "What does ChatGPT already cite us for?"
+
 ### `check_prompt_coverage`
-Which of several prompts actually cite a specific domain, and which don't - up to 10 keywords in one call. ChatGPT, 1 unit per keyword.
+Which of several prompts actually cite a specific domain, and which don't - up to 10 keywords in one call. ChatGPT, Gemini or Perplexity (`engine`), 1 unit per keyword per sample. Pass `samples=3` to get "cited in 2 of 3 answers" instead of one yes or no. Each result is remembered for 180 days, so the next check reports what changed (`previous`, `change`, `newly_cited`).
 
 Cited and named are reported separately. An answer can name your brand without linking you (`mentioned_not_cited`: the model already knows you, it just isn't citing you) or link a page it never names. Pass `brand` (e.g. `"Notion"`) so the name check looks for your real brand instead of a guess from the domain.
 > "Out of everything we care about, where do we already show up?"
+
+### `get_check_history`
+Your earlier `check_prompt_coverage` results for a domain, newest first. 0 units.
+> "Did our changes last week move anything?"
 
 ### `find_citation_leaders`
 Who dominates AI-answer citations for a topic, and whether a domain is among them.

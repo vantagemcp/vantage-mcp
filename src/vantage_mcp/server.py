@@ -10,20 +10,29 @@ where API-key auth + usage metering actually apply):
     python -m vantage_mcp.server --http
 """
 
+import html
 import json
+import re
+import sqlite3
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.settings import AuthSettings
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 from vantage_mcp import dataforseo_client as dfs
 from vantage_mcp import store
-from vantage_mcp.auth import VantageTokenVerifier, tier_from_scopes
+from vantage_mcp.auth import SCOPE as OAUTH_SCOPE
+from vantage_mcp.auth import VantageOAuthProvider, complete_consent, deny_consent, tier_from_scopes
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+SUPPORT_EMAIL = "support@vantagemcp.dev"
+CALL_LOG_PATH = "/var/log/vantage/calls.jsonl"
 
 MIN_BALANCE_USD = 1.0  # same hard-stop guardrail as the source pipeline
 BASE_URL = "https://vantagemcp.dev"
@@ -93,25 +102,154 @@ TRANSPORT_SECURITY = TransportSecuritySettings(
     allowed_origins=[f"https://{DOMAIN}"],
 )
 
+OAUTH_PROVIDER = VantageOAuthProvider(BASE_URL)
+
 mcp = MCPServer(
     name="vantage",
     instructions=(
         "Checks whether a brand or domain is cited inside AI answer engines "
-        "(ChatGPT, Google AI Overview), how that's changed over time, and how "
-        "the winning AI-generated answer for a given topic is structured. Use "
-        "this when a user asks things like 'does ChatGPT know about my product', "
-        "'who gets cited for this keyword in AI search', 'is our AI visibility "
-        "growing', or 'what does a winning AI answer look like for X'."
+        "(ChatGPT, Gemini, Perplexity, Google AI Overview), which questions "
+        "already cite it, how that's changed over time, and how the winning "
+        "AI-generated answer for a given topic is structured. Use this when a "
+        "user asks things like 'does ChatGPT know about my product', 'what does "
+        "AI cite us for', 'who gets cited for this keyword in AI search', 'did "
+        "our changes work', or 'what does a winning AI answer look like for X'. "
+        "Answers vary between runs: use samples=3 before telling someone they "
+        "are or are not cited."
     ),
-    token_verifier=VantageTokenVerifier(),
+    # OAuth sign-in (1.8.0). The provider also verifies plain API keys, so
+    # every key issued before keeps working exactly as it did.
+    auth_server_provider=OAUTH_PROVIDER,
     auth=AuthSettings(
         issuer_url=BASE_URL,
         resource_server_url=f"{BASE_URL}/mcp",
+        client_registration_options=ClientRegistrationOptions(
+            enabled=True, valid_scopes=[OAUTH_SCOPE], default_scopes=[OAUTH_SCOPE]),
     ),
 )
 
 
-CALL_LOG_PATH = "/var/log/vantage/calls.jsonl"
+_CONSENT_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Connect to Vantage</title>
+<style>
+:root {{ color-scheme: dark; --bg: #0a0f0f; --panel: #0f1717; --ink: #eef3f2; --muted: #9aa9a7;
+  --line: #22403c; --primary: #3fd1a6; --err: #ff8a80; }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+main {{ max-width: 30rem; margin: 0 auto; padding: 3rem 1rem; }}
+h1 {{ font-size: 1.6rem; margin: 0 0 .5rem; }}
+p {{ color: var(--muted); margin: 0 0 1rem; }}
+form {{ background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 1.25rem; margin: 0 0 1rem; }}
+label {{ display: block; font-weight: 600; margin: 0 0 .4rem; }}
+input {{ width: 100%; padding: .7rem .8rem; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink); font: inherit; }}
+input:focus-visible, button:focus-visible {{ outline: 2px solid var(--primary); outline-offset: 2px; }}
+button, .btn {{ display: block; text-align: center; text-decoration: none; margin-top: .8rem;
+  width: 100%; padding: .7rem; border: 0; border-radius: 8px; background: var(--primary);
+  color: #04211a; font: inherit; font-weight: 700; cursor: pointer; }}
+.btn:focus-visible {{ outline: 2px solid var(--primary); outline-offset: 2px; }}
+.ghost {{ background: transparent; color: var(--ink); border: 1px solid var(--line); }}
+form.plain {{ background: none; border: 0; padding: 0; }}
+.link {{ background: none; color: var(--muted); text-decoration: underline; margin-top: 0; }}
+.err {{ color: var(--err); }}
+code {{ display: block; word-break: break-all; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: .7rem; margin: .5rem 0 1rem; color: var(--ink); }}
+a {{ color: var(--primary); }}
+</style></head><body><main>{body}</main></body></html>"""
+
+
+def _consent_html(body: str, status: int = 200):
+    from starlette.responses import HTMLResponse
+    return HTMLResponse(_CONSENT_PAGE.format(body=body), status_code=status,
+                        headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"})
+
+
+def _consent_form(req: str, client_name: str, error: str = "") -> str:
+    esc = html.escape
+    return f"""<h1>Connect {esc(client_name)} to Vantage</h1>
+<p>{esc(client_name)} is asking to run Vantage's AI-citation checks for you. It will use your
+Vantage allowance (30 free units a month on the free plan).</p>
+{f'<p class="err" role="alert">{esc(error)}</p>' if error else ''}
+<form method="post">
+  <input type="hidden" name="req" value="{esc(req)}">
+  <label for="email">New to Vantage? Your email</label>
+  <input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com">
+  <button type="submit" name="action" value="email">Create a free account and connect</button>
+</form>
+<form method="post">
+  <input type="hidden" name="req" value="{esc(req)}">
+  <label for="key">Already have a Vantage API key?</label>
+  <input id="key" name="key" type="password" autocomplete="off" placeholder="vtg_...">
+  <button class="ghost" type="submit" name="action" value="key">Sign in with this key and connect</button>
+</form>
+<form class="plain" method="post">
+  <input type="hidden" name="req" value="{esc(req)}">
+  <button class="link" type="submit" name="action" value="deny">Cancel and go back</button>
+</form>
+<p>No card needed. <a href="{BASE_URL}/legal/">Privacy and terms</a>.</p>"""
+
+
+@mcp.custom_route("/oauth/consent", methods=["GET", "POST"])
+async def oauth_consent(request):
+    """The page an MCP client sends a person to during OAuth sign-in: create
+    a free account by email, or sign in with an existing API key. See auth.py
+    for why an existing email cannot sign in by itself."""
+    from starlette.responses import RedirectResponse
+
+    if request.method == "GET":
+        req = request.query_params.get("req", "")
+    else:
+        form = await request.form()
+        req = str(form.get("req") or "")
+    pending = store.oauth_peek_pending(req) if req else None
+    if not pending:
+        return _consent_html("<h1>This sign-in link has expired</h1><p>Go back to your app and "
+                             "start connecting Vantage again.</p>", 400)
+    client = await OAUTH_PROVIDER.get_client(pending[0])
+    client_name = (client.client_name if client and client.client_name else "An app")[:60]
+    if request.method == "GET":
+        return _consent_html(_consent_form(req, client_name))
+
+    action = form.get("action")
+    if action == "deny":
+        return RedirectResponse(deny_consent(req) or BASE_URL, status_code=302)
+    if action == "key":
+        record = store.verify(str(form.get("key") or "").strip())
+        if not record:
+            return _consent_html(_consent_form(req, client_name, "That key was not recognised."), 400)
+        _log_oauth("oauth_key_signin", record["client_id"])
+        return RedirectResponse(complete_consent(req, record["client_id"]) or BASE_URL, status_code=302)
+    email = str(form.get("email") or "").strip()
+    if not EMAIL_RE.match(email):
+        return _consent_html(_consent_form(req, client_name, "Enter a valid email address."), 400)
+    plaintext, account = store.create_api_key_for_email(email)
+    if not plaintext:
+        return _consent_html(_consent_form(
+            req, client_name, "That email already has a Vantage account. Sign in with its API key "
+            f"below, or email {SUPPORT_EMAIL} if you have lost it."), 400)
+    _log_oauth("oauth_email_signup", account)
+    target = complete_consent(req, account) or BASE_URL
+    esc = html.escape
+    return _consent_html(f"""<h1>You're connected</h1>
+<p>Your free Vantage account is ready and {esc(client_name)} is connected. This is your account's
+API key for any other tool, shown once, so save it now:</p>
+<code>{esc(plaintext)}</code>
+<a class="btn" href="{esc(target)}">Continue to {esc(client_name)}</a>""")
+
+
+def _log_oauth(event: str, client_id: str) -> None:
+    line = json.dumps({"ts": time.time(), "client_id": client_id, "tool": event, "outcome": "success"})
+    print(line, flush=True)
+    try:
+        with open(CALL_LOG_PATH, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
 
 
 def _log_call(tool: str, outcome: str, **extra: object) -> None:
@@ -223,6 +361,57 @@ def _refund_usage(cost: int) -> None:
         store.refund(token.client_id, cost)
 
 
+def _client_id() -> str | None:
+    """The calling key's client id, or None in stdio/local-dev mode."""
+    token = get_access_token()
+    return token.client_id if token else None
+
+
+def _guard_live(engine: str, samples: int) -> str | None:
+    """Arguments of the live-answer tools, checked before any quota is spent."""
+    if engine not in dfs.ENGINES:
+        return f'"{engine}" is not a supported engine. Use one of: {", ".join(dfs.ENGINES)}.'
+    if not isinstance(samples, int) or not 1 <= samples <= dfs.MAX_SAMPLES:
+        return f"samples must be a whole number from 1 to {dfs.MAX_SAMPLES}, got {samples!r}."
+    return None
+
+
+TRANSIENT_ERROR = ("Visibility data provider had a transient error on this request. Try again - "
+                   "if it keeps failing, contact support@vantagemcp.dev.")
+
+
+def _run_error(run: dict) -> str:
+    """A failed sample's message for the caller: provider transport errors are
+    internal detail (status codes, provider wording), so they become the
+    generic transient message; the provider's own "no answer" style messages
+    are useful and pass through."""
+    return TRANSIENT_ERROR if run.get("transient") else run.get("error") or TRANSIENT_ERROR
+
+
+def _source_frequency(runs: list[dict]) -> list[dict]:
+    """How many of the sampled answers cited each domain, most often first."""
+    counts: dict[str, int] = {}
+    for run in runs:
+        for d in run.get("source_domains") or []:
+            counts[d] = counts.get(d, 0) + 1
+    return [{"domain": d, "runs": n} for d, n in sorted(counts.items(), key=lambda kv: -kv[1])]
+
+
+def _change(previous: dict | None, cited_runs: int, samples: int) -> str:
+    """This check against the last one for the same key, domain, keyword,
+    engine and market, compared as a citation rate so a 1-sample check and a
+    3-sample check are comparable."""
+    if previous is None:
+        return "first_check"
+    before = previous["cited_runs"] / max(previous["samples"], 1)
+    now = cited_runs / max(samples, 1)
+    return "same" if now == before else ("up" if now > before else "down")
+
+
+def _cited_majority(cited_runs: int, samples: int) -> bool:
+    return cited_runs > 0 and cited_runs * 2 >= samples
+
+
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def get_usage() -> dict:
     """Check how much of this billing period's quota is left, before
@@ -233,9 +422,11 @@ def get_usage() -> dict:
     only reads Vantage's own record of what has been used.
 
     Returns: {"tier", "period" (YYYY-MM), "units_used", "units_limit",
-    "units_remaining"}. find_citation_leaders costs
+    "units_remaining"}. find_citation_leaders and find_cited_questions cost
     10 units/call; analyze_citation_trend, analyze_citation_structure (and
-    its batch form, per keyword), and analyze_citation_gap cost 1.
+    its batch form, per keyword), check_prompt_coverage (per keyword) and
+    analyze_citation_gap cost 1, times `samples` where a tool takes it.
+    get_check_history costs 0.
 
     stdio/local-dev mode (no HTTP access token) has no metering at all -
     this returns tier "unmetered" with no real limit in that case.
@@ -443,18 +634,22 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def analyze_citation_structure(keyword: str, country: str = dfs.DEFAULT_COUNTRY,
-                               language: str = dfs.DEFAULT_LANGUAGE) -> dict:
+                               language: str = dfs.DEFAULT_LANGUAGE, engine: str = "chat_gpt",
+                               samples: int = 1) -> dict:
     """Analyze the structural shape of the AI-generated answer actually
     cited for a keyword: does it lead with a list, how long is the opening
     passage, how many sources does it cite and from which domains. Use
     this to understand what a winning AI-search answer looks like for a
     topic, e.g. before writing content meant to get cited.
 
-    Read-only: no side effects, safe to retry. Costs 1 quota unit/call
-    (free tier is 30 units/month shared across every metered tool, so up to 30
-    calls to this tool alone if nothing else is used that period).
+    Read-only: no side effects, safe to retry. Costs 1 quota unit per sample
+    (1 by default; free tier is 30 units/month shared across every metered
+    tool, so up to 30 single-sample calls to this tool alone if nothing else
+    is used that period).
 
-    Returns: {"keyword", "leads_with_list" (bool), "opening_word_count"
+    Returns: {"keyword", "engine", "model" (the answering model's version, as
+    the provider reports it), "checked_at" (when the answer was fetched, UTC),
+    "leads_with_list" (bool), "opening_word_count"
     (int), "opening_has_number" (bool), "outline" (list of up to 12 section
     heads, in order: the answer's headings, or its top-level list items when it
     has fewer than two headings; heads only, never the text under them),
@@ -462,7 +657,11 @@ def analyze_citation_structure(keyword: str, country: str = dfs.DEFAULT_COUNTRY,
     "source_domains" (list of up to 10 domain strings), "source_mix"
     ({"community_pct" (share of those sources that are community sites such
     as Reddit, YouTube, X, Quora), "community_domains", "other_domains"}),
-    "country", "language"}.
+    "country", "language"}. With samples above 1 the shape fields describe
+    the first answer, plus "samples_ok" (answers that came back) and
+    "source_frequency" (list of {"domain", "runs"}: how many of the answers
+    cited each domain, most often first). Answers change from run to run, so
+    a domain cited in every sample is a far stronger signal than one sample.
 
     Use analyze_citation_structure_batch instead if you need this for more than
     one keyword - one call per topic here adds up fast for a cluster. Use
@@ -472,38 +671,42 @@ def analyze_citation_structure(keyword: str, country: str = dfs.DEFAULT_COUNTRY,
     Args:
         keyword: the topic/query to analyze, e.g. "how to reduce churn".
         country: market to read the answer in, e.g. "Italy". Defaults to
-            "United States".
+            "United States". For perplexity a 2-letter code also works.
         language: language code, e.g. "it". Defaults to "en". Write the
             keyword in that language too.
+        engine: "chat_gpt" (default), "gemini" or "perplexity". chat_gpt and
+            gemini are the answers a person sees in those apps; perplexity is
+            Perplexity's sonar API with web search.
+        samples: how many independent answers to read, 1 to 5. Default 1.
     """
     country, language = _market(country, language)
+    if err := _guard_live(engine, samples):
+        _log_call("analyze_citation_structure", "invalid_argument")
+        return {"error": err}
     if err := _guard_balance():
         _log_call("analyze_citation_structure", "balance_denied")
         return {"error": err}
-    if err := _guard_usage(1):
+    if err := _guard_usage(samples):
         _log_call("analyze_citation_structure", "quota_denied")
         return {"error": err}
-    try:
-        result = dfs.citation_structure(keyword=keyword, country=country, language=language)
-    except dfs.DataForSEOError:
-        _refund_usage(1)
-        _log_call("analyze_citation_structure", "provider_error")
-        return {
-            "error": (
-                "Visibility data provider had a transient error on this "
-                "request. Try again - if it keeps failing for this keyword, "
-                "contact support@vantagemcp.dev."
-            )
-        }
-    if result.get("error"):
-        _refund_usage(1)
-    _log_call("analyze_citation_structure", "error" if result.get("error") else "success")
+    runs = dfs.sample_structures(keyword, samples, country=country, language=language, engine=engine)
+    ok = [r for r in runs if not r.get("error")]
+    if len(ok) < samples:
+        _refund_usage(samples - len(ok))
+    if not ok:
+        _log_call("analyze_citation_structure", "provider_error" if runs[0].get("transient") else "error")
+        return {"keyword": keyword, "error": _run_error(runs[0])}
+    result = dict(ok[0])
+    if samples > 1:
+        result["samples_ok"] = len(ok)
+        result["source_frequency"] = _source_frequency(ok)
+    _log_call("analyze_citation_structure", "success", engine=engine, samples=samples)
     return result
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def analyze_citation_structure_batch(keywords: list[str], country: str = dfs.DEFAULT_COUNTRY,
-                                     language: str = dfs.DEFAULT_LANGUAGE) -> dict:
+                                     language: str = dfs.DEFAULT_LANGUAGE, engine: str = "chat_gpt") -> dict:
     """Analyze the structural shape of the winning AI answer across several
     related keywords/topics in one call: does each lead with a list, how
     long is the opening, how many sources it cites. Use this for content
@@ -529,8 +732,12 @@ def analyze_citation_structure_batch(keywords: list[str], country: str = dfs.DEF
         country: market to read the answers in, e.g. "Italy". Defaults to
             "United States".
         language: language code, e.g. "it". Defaults to "en".
+        engine: "chat_gpt" (default), "gemini" or "perplexity", as in
+            analyze_citation_structure. One answer per topic.
     """
     country, language = _market(country, language)
+    if err := _guard_live(engine, 1):
+        return {"error": err}
     if not keywords:
         return {
             "error": (
@@ -557,7 +764,7 @@ def analyze_citation_structure_batch(keywords: list[str], country: str = dfs.DEF
             results.append({"keyword": kw, "error": err})
             continue
         try:
-            result = dfs.citation_structure(keyword=kw, country=country, language=language)
+            result = dfs.citation_structure(keyword=kw, country=country, language=language, engine=engine)
         except dfs.DataForSEOError:
             # A per-keyword provider error must not sink the whole batch -
             # this call already consumed one unit of usage above, so it is
@@ -598,7 +805,8 @@ def analyze_citation_structure_batch(keywords: list[str], country: str = dfs.DEF
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = None,
-                          country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE) -> dict:
+                          country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE,
+                          engine: str = "chat_gpt", samples: int = 1) -> dict:
     """Check which of several prompts/keywords actually cite a specific
     domain, and which ones don't. This is usually the first real question
     in an AI-answer-engine audit - not "what does a winning answer look
@@ -608,30 +816,43 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
     use analyze_citation_gap on whichever keywords come back not cited to
     see what to actually change.
 
-    Read-only: no side effects, safe to retry. Costs 1 quota unit per
-    keyword checked (free tier is 30 units/month shared across every
-    metered tool, so up to 30 keywords total that period if nothing else
-    is used). A per-keyword provider error doesn't fail the whole call -
-    that keyword's entry just carries an "error" field instead. ChatGPT
-    only - the underlying check has no Google AI Overview equivalent.
+    Read-only for the caller, safe to retry. Costs 1 quota unit per keyword
+    per sample (1 sample by default; free tier is 30 units/month shared
+    across every metered tool, so up to 30 keyword checks that period if
+    nothing else is used). A per-keyword provider error doesn't fail the
+    whole call - that keyword's entry just carries an "error" field instead.
+    On the hosted endpoint each keyword's result is remembered for 180 days
+    against your API key, so the next check of the same domain and keyword
+    reports what changed (see "previous" and "change"); get_check_history
+    reads that record back for free.
 
-    Returns: {"domain", "keywords_checked" (int, excludes any that
-    errored), "keywords_cited" (int), "coverage_pct" (float, 0-100),
-    "not_cited" (list of the keyword strings where domain did not appear -
-    the actionable list), "results" (one entry per keyword, in the order
-    given: {"keyword", "cited" (bool), "rank" (int|null, 1-based position
-    among that answer's sources - present even when cited is false, so you
-    can tell "just missed it" from "not in the running"), "num_sources_cited",
-    "source_domains" (who IS cited, for a keyword you are not in), "source_mix"
-    (how much of that is community sites such as Reddit, YouTube, X - where
-    to get discussed to close the gap), "leads_with_list",
-    "opening_word_count", "mentioned" (bool - the answer's text names the
-    domain or brand, whether or not it links to it)}, or {"keyword",
-    "error"} for one that failed), "keywords_mentioned" (int),
-    "mentioned_not_cited" (keywords where the answer names you but does not
-    cite you - the model already knows you, it just isn't linking you),
-    "mention_terms" (exactly what was looked for in the answer text)}.
-    "Cited" and "mentioned" are separate claims and are never merged.
+    Returns: {"domain", "engine", "samples", "keywords_checked" (int,
+    excludes any that errored), "keywords_cited" (int), "coverage_pct"
+    (float, 0-100), "not_cited" (list of the keyword strings where domain
+    was not cited - the actionable list), "newly_cited" and "no_longer_cited"
+    (keywords whose status flipped since your last check of them), "results"
+    (one entry per keyword, in the order given: {"keyword", "cited" (bool:
+    cited in at least half of the samples), "cited_runs" (how many sampled
+    answers cited it), "samples_ok" (how many answers came back), "rank"
+    (int|null, best 1-based position among the answers' sources, null when
+    never cited), "num_sources_cited", "source_domains" (who IS cited, for a
+    keyword you are not in), "source_mix" (how much of that is community
+    sites such as Reddit, YouTube, X - where to get discussed to close the
+    gap), "source_frequency" (only with samples above 1: {"domain", "runs"}
+    per domain), "leads_with_list", "opening_word_count", "mentioned" (bool -
+    the answer's text names the domain or brand in at least half of the
+    samples, whether or not it links to it), "model", "checked_at",
+    "previous" ({"checked_at", "cited_runs", "samples", "best_rank"} from
+    your last check of this domain and keyword on the same engine and
+    market, or null), "change" ("first_check", "up", "down" or "same",
+    comparing citation rates)}, or {"keyword", "error"} for one that
+    failed), "keywords_mentioned" (int), "mentioned_not_cited" (keywords
+    where the answer names you but does not cite you - the model already
+    knows you, it just isn't linking you), "mention_terms" (exactly what was
+    looked for in the answer text)}. "Cited" and "mentioned" are separate
+    claims and are never merged. Answers change from run to run: with
+    samples=1 a single answer decides "cited", so use samples=3 before
+    telling someone they are or are not cited.
 
     Args:
         domain: bare domain to check, e.g. "example.com" (no https://, no www).
@@ -646,8 +867,13 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
             "United States".
         language: language code, e.g. "it". Defaults to "en". Write the
             keywords in that language too.
+        engine: "chat_gpt" (default), "gemini" or "perplexity", as in
+            analyze_citation_structure.
+        samples: independent answers to read per keyword, 1 to 5. Default 1.
     """
     country, language = _market(country, language)
+    if err := _guard_live(engine, samples):
+        return {"error": err}
     if not domain or not domain.strip():
         return {"error": "domain is empty - pass a bare domain, e.g. \"example.com\"."}
     if not keywords:
@@ -672,65 +898,96 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
     # What counts as the answer naming you: the domain itself, plus the brand
     # if given, else the domain's first label as a best guess.
     mention_terms = [target] + ([brand.strip()] if brand and brand.strip() else [target.split(".")[0]])
-    results = []
-    for kw in keywords:
-        if err := _guard_usage(1):
+    results: list[dict | None] = [None] * len(keywords)
+    # Quota is charged and refunded here, on the calling thread: the caller's
+    # access token lives in a contextvar the worker threads cannot see.
+    jobs = []
+    for i, kw in enumerate(keywords):
+        if err := _guard_usage(samples):
             _log_call("check_prompt_coverage", "quota_denied", keyword=kw)
-            results.append({"keyword": kw, "error": err})
-            continue
-        try:
-            result = dfs.citation_structure(keyword=kw, mention_terms=mention_terms,
-                                            country=country, language=language)
-        except dfs.DataForSEOError:
-            # Same shape as analyze_citation_structure_batch: a per-keyword
-            # provider error must not sink the whole call, and the unit
-            # already spent above on a call that came back unusable is
-            # handed back.
-            _refund_usage(1)
-            _log_call("check_prompt_coverage", "provider_error", keyword=kw)
-            results.append({
-                "keyword": kw,
-                "error": (
-                    "Visibility data provider had a transient error on this "
-                    "keyword. The rest of the call still completed - retry "
-                    "just this keyword if you need it."
-                ),
-            })
-            continue
-        if result.get("error"):
-            _refund_usage(1)
-            _log_call("check_prompt_coverage", "error", keyword=kw)
-            results.append({"keyword": kw, "error": result["error"]})
+            results[i] = {"keyword": kw, "error": err}
+        else:
+            jobs.append(i)
+
+    def fetch(i: int) -> list[dict]:
+        return dfs.sample_structures(keywords[i], samples, mention_terms=mention_terms,
+                                     country=country, language=language, engine=engine)
+
+    # Keywords in parallel too: ten keywords one after another took minutes.
+    # At most 4 x samples requests in flight, inside the provider's limits.
+    runs_by_job = {}
+    if jobs:
+        with ThreadPoolExecutor(max_workers=min(4, len(jobs))) as pool:
+            runs_by_job = dict(zip(jobs, pool.map(fetch, jobs)))
+
+    client_id = _client_id()
+    for i, runs in runs_by_job.items():
+        kw = keywords[i]
+        ok = [r for r in runs if not r.get("error")]
+        if len(ok) < samples:
+            _refund_usage(samples - len(ok))
+        if not ok:
+            _log_call("check_prompt_coverage", "provider_error" if runs[0].get("transient") else "error",
+                      keyword=kw)
+            results[i] = {"keyword": kw, "error": _run_error(runs[0])}
             continue
 
-        domains = result.get("source_domains") or []
-        rank = next(
-            (i for i, d in enumerate(domains, start=1) if _normalize_domain(d) == target),
-            None,
-        )
-        _log_call("check_prompt_coverage", "success", keyword=kw)
-        results.append({
+        ranks = [next((n for n, d in enumerate(r.get("source_domains") or [], start=1)
+                       if _normalize_domain(d) == target), None) for r in ok]
+        cited_runs = sum(1 for r in ranks if r is not None)
+        best_rank = min((r for r in ranks if r is not None), default=None)
+        mentioned_runs = sum(1 for r in ok if r.get("mentioned"))
+        first = ok[0]
+        entry = {
             "keyword": kw,
-            "cited": rank is not None,
-            "rank": rank,
-            "num_sources_cited": result.get("num_sources_cited"),
-            "source_domains": domains,
-            "source_mix": result.get("source_mix"),
-            "leads_with_list": result.get("leads_with_list"),
-            "opening_word_count": result.get("opening_word_count"),
-            "mentioned": bool(result.get("mentioned")),
-        })
+            "cited": _cited_majority(cited_runs, len(ok)),
+            "cited_runs": cited_runs,
+            "samples_ok": len(ok),
+            "rank": best_rank,
+            "num_sources_cited": first.get("num_sources_cited"),
+            "source_domains": first.get("source_domains") or [],
+            "source_mix": first.get("source_mix"),
+            **({"source_frequency": _source_frequency(ok)} if samples > 1 else {}),
+            "leads_with_list": first.get("leads_with_list"),
+            "opening_word_count": first.get("opening_word_count"),
+            "mentioned": _cited_majority(mentioned_runs, len(ok)),
+            "model": first.get("model"),
+            "checked_at": first.get("checked_at"),
+            "previous": None,
+            "change": None,
+        }
+        if client_id:
+            try:
+                prev = store.record_check(client_id, target, kw, engine, country, language,
+                                          len(ok), cited_runs, best_rank, mentioned_runs)
+            except sqlite3.Error:
+                prev, entry["change"] = None, "not_recorded"
+            else:
+                entry["previous"] = prev and {k: prev[k] for k in
+                                              ("checked_at", "cited_runs", "samples", "best_rank")}
+                entry["change"] = _change(prev, cited_runs, len(ok))
+        _log_call("check_prompt_coverage", "success", keyword=kw, engine=engine, samples=samples)
+        results[i] = entry
 
     checked = [r for r in results if "error" not in r]
     cited = [r for r in checked if r["cited"]]
+
+    def was_cited(r: dict) -> bool | None:
+        p = r.get("previous")
+        return None if not p else _cited_majority(p["cited_runs"], p["samples"])
+
     return {
         "domain": domain,
+        "engine": engine,
+        "samples": samples,
         "country": country,
         "language": language,
         "keywords_checked": len(checked),
         "keywords_cited": len(cited),
         "coverage_pct": round(100 * len(cited) / len(checked), 1) if checked else 0.0,
         "not_cited": [r["keyword"] for r in checked if not r["cited"]],
+        "newly_cited": [r["keyword"] for r in checked if r["cited"] and was_cited(r) is False],
+        "no_longer_cited": [r["keyword"] for r in checked if not r["cited"] and was_cited(r) is True],
         "keywords_mentioned": len([r for r in checked if r["mentioned"]]),
         "mentioned_not_cited": [r["keyword"] for r in checked if r["mentioned"] and not r["cited"]],
         "mention_terms": mention_terms,
@@ -740,7 +997,7 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
 def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT_COUNTRY,
-                         language: str = dfs.DEFAULT_LANGUAGE) -> dict:
+                         language: str = dfs.DEFAULT_LANGUAGE, engine: str = "chat_gpt") -> dict:
     """Compare your own page's structure against the AI-generated answer
     actually cited for this keyword, and return a fix brief: ordered
     rewrite instructions for your page, not just a description of the
@@ -783,8 +1040,12 @@ def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT
         country: market to read the cited answer in, e.g. "Italy". Defaults
             to "United States".
         language: language code, e.g. "it". Defaults to "en".
+        engine: "chat_gpt" (default), "gemini" or "perplexity": whose answer
+            to compare your page against.
     """
     country, language = _market(country, language)
+    if err := _guard_live(engine, 1):
+        return {"error": err}
     if err := _guard_balance():
         _log_call("analyze_citation_gap", "balance_denied")
         return {"error": err}
@@ -792,7 +1053,8 @@ def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT
         _log_call("analyze_citation_gap", "quota_denied")
         return {"error": err}
     try:
-        result = dfs.citation_gap(keyword=keyword, your_url=your_url, country=country, language=language)
+        result = dfs.citation_gap(keyword=keyword, your_url=your_url, country=country,
+                                  language=language, engine=engine)
     except dfs.DataForSEOError:
         _refund_usage(1)
         _log_call("analyze_citation_gap", "provider_error")
@@ -807,6 +1069,100 @@ def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT
         _refund_usage(1)
     _log_call("analyze_citation_gap", "error" if result.get("error") else "success")
     return result
+
+
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+def find_cited_questions(domain: str, platform: str = "chat_gpt", limit: int = 20,
+                         country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE) -> dict:
+    """Find the questions people ask AI answer engines where a domain is
+    already cited as a source, most-asked first. Starts from the domain, so
+    nobody has to guess keywords first. Use this to answer 'what does
+    ChatGPT already cite us for' or to pick the keywords to feed
+    check_prompt_coverage and analyze_citation_gap.
+
+    Read-only: no side effects, safe to retry. Costs 10 quota units/call
+    (free tier is 30 units/month shared across every metered tool, so up to 3
+    calls to this tool alone if nothing else is used that period).
+
+    Returns: {"domain", "platform", "country", "language", "total_questions"
+    (int, every tracked question citing the domain, which can exceed the
+    list), "questions" (up to `limit`, most-asked first: {"question",
+    "ai_search_volume" (monthly asks as the provider estimates them),
+    "your_position" (1-based position of the domain among that answer's
+    sources), "source_domains" (who else that answer cites), "last_seen"
+    (when the provider last recorded this answer, UTC)})}. An empty list means
+    the provider's tracked answers do not cite the domain, not that no
+    answer anywhere does.
+
+    This reads the provider's tracked answer corpus, the same measurement as
+    find_citation_leaders, not a live answer: re-check a question with
+    check_prompt_coverage to see today's answer.
+
+    Args:
+        domain: bare domain, e.g. "example.com" (no https://, no www).
+            Subdomains are included.
+        platform: "chat_gpt" (default) or "google" (Google's AI Overview).
+        limit: how many questions to return, 1 to 20. Default 20.
+        country: market, e.g. "Italy". Defaults to "United States". chat_gpt
+            only has United States data; use platform "google" elsewhere.
+        language: language code, e.g. "it". Defaults to "en", the only
+            option for chat_gpt.
+    """
+    country, language = _market(country, language)
+    if not domain or not domain.strip():
+        return {"error": "domain is empty - pass a bare domain, e.g. \"example.com\"."}
+    if err := _guard_platform(platform) or _guard_mentions_market(platform, country, language):
+        _log_call("find_cited_questions", "invalid_platform")
+        return {"error": err}
+    limit = max(1, min(int(limit or 20), 20))
+    if err := _guard_balance():
+        _log_call("find_cited_questions", "balance_denied")
+        return {"error": err}
+    if err := _guard_usage(10):
+        _log_call("find_cited_questions", "quota_denied")
+        return {"error": err}
+    try:
+        result = dfs.cited_questions(_normalize_domain(domain), platform=platform, limit=limit,
+                                     country=country, language=language)
+    except dfs.DataForSEOError:
+        _refund_usage(10)
+        _log_call("find_cited_questions", "provider_error")
+        return {"error": TRANSIENT_ERROR}
+    if result.get("error"):
+        _refund_usage(10)
+        _log_call("find_cited_questions", "error")
+        return {"domain": domain, "error": TRANSIENT_ERROR}
+    _log_call("find_cited_questions", "success")
+    return result
+
+
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+def get_check_history(domain: str, keyword: str | None = None, limit: int = 50) -> dict:
+    """Read back your own earlier check_prompt_coverage results for a domain,
+    newest first, to show progress over time or to confirm whether a change
+    (a rewrite, a new mention somewhere) moved anything. Use this for 'has
+    our citation status changed since last week' without spending units.
+
+    Costs 0 quota units: it only reads Vantage's own record of your checks,
+    never the data provider. Results are kept 180 days per API key and are
+    only visible to that key.
+
+    Returns: {"domain", "keyword" (or null for every keyword), "checks"
+    (newest first: {"keyword", "engine", "country", "language", "samples",
+    "cited_runs", "best_rank", "mentioned_runs", "checked_at"})}.
+
+    Args:
+        domain: the bare domain the checks were run for, e.g. "example.com".
+        keyword: optional, only this keyword's history.
+        limit: how many rows to return, 1 to 200. Default 50.
+    """
+    client_id = _client_id()
+    if client_id is None:
+        return {"error": "Check history is kept per API key, so it only exists on the hosted endpoint."}
+    rows = store.check_history(client_id, _normalize_domain(domain), keyword,
+                               max(1, min(int(limit or 50), 200)))
+    _log_call("get_check_history", "success")
+    return {"domain": domain, "keyword": keyword, "checks": rows}
 
 
 def main() -> None:

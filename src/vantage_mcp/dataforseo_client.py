@@ -315,26 +315,102 @@ def _has_table(markdown: str) -> bool:
     return bool(_TABLE_SEP_RE.search(markdown))
 
 
+# Answer engines a live-answer check can read. chat_gpt and gemini are
+# DataForSEO's scrapers of the consumer apps (what a person sees); perplexity
+# is Perplexity's own sonar API with web search on, the closest thing to its
+# app that the provider offers. All three measured at ~$0.004-0.006 a call
+# on 2026-09-24, so all cost 1 unit.
+ENGINES = ("chat_gpt", "gemini", "perplexity")
+
+# Perplexity localises by ISO country code, not by name. Common markets by
+# name; any 2-letter code is also accepted as is.
+_ISO_COUNTRIES = {
+    "united states": "US", "united kingdom": "GB", "canada": "CA", "australia": "AU",
+    "new zealand": "NZ", "ireland": "IE", "germany": "DE", "france": "FR", "italy": "IT",
+    "spain": "ES", "portugal": "PT", "netherlands": "NL", "belgium": "BE", "switzerland": "CH",
+    "austria": "AT", "sweden": "SE", "norway": "NO", "denmark": "DK", "finland": "FI",
+    "poland": "PL", "brazil": "BR", "mexico": "MX", "argentina": "AR", "india": "IN",
+    "japan": "JP", "singapore": "SG", "south africa": "ZA", "united arab emirates": "AE",
+}
+
+
+def country_iso(country: str) -> str | None:
+    c = (country or "").strip()
+    if len(c) == 2 and c.isalpha():
+        return c.upper()
+    return _ISO_COUNTRIES.get(c.lower())
+
+
+def _domains_from(sources: list[dict]) -> list[str]:
+    """Distinct cited domains in first-seen order. The provider can list the
+    same domain twice (two pages on bitwarden.com cited separately), which
+    inflated num_sources_cited: a "9 sources" answer with 2 duplicates is
+    really 7 sites. Deduped before counting or truncating, so the count and
+    the list it describes always agree."""
+    domains = []
+    for src in sources:
+        d = src.get("domain") or urllib.parse.urlsplit(src.get("url") or "").hostname
+        if d and d not in domains:
+            domains.append(d)
+    return domains
+
+
+def fetch_answer(keyword: str, engine: str = "chat_gpt",
+                 country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE) -> dict:
+    """One live answer from `engine`, normalised to {"markdown", "domains",
+    "model", "checked_at"} or {"error"}. Raises DataForSEOError on transport
+    failure, like every other call here."""
+    if engine == "perplexity":
+        iso = country_iso(country)
+        if not iso:
+            return {"error": f'Perplexity needs a country it can localise to; "{country}" is not one '
+                             'Vantage knows. Pass a 2-letter country code, e.g. "IT".'}
+        body = [{"user_prompt": keyword[:500], "model_name": "sonar", "max_output_tokens": 1200,
+                 "web_search_country_iso_code": iso}]
+        path = "ai_optimization/perplexity/llm_responses/live"
+    elif engine == "gemini":
+        body = [{"keyword": keyword, "language_code": language, "location_name": country}]
+        path = "ai_optimization/gemini/llm_scraper/live/advanced"
+    else:
+        body = [{"keyword": keyword, "language_code": language, "location_name": country,
+                 "force_web_search": True}]
+        path = "ai_optimization/chat_gpt/llm_scraper/live/advanced"
+    res = _call(path, body, timeout=130)
+    task = res["tasks"][0]
+    if task.get("status_code") != 20000:
+        return {"error": task.get("status_message")}
+    # The provider can answer status 20000 with "result": null (no answer
+    # produced for this keyword). Say so instead of a NoneType TypeError.
+    if not task.get("result"):
+        return {"error": "provider returned no answer for this keyword (empty result)"}
+    result = task["result"][0]
+    if engine == "perplexity":
+        sections = [s for it in result.get("items") or [] for s in it.get("sections") or []]
+        markdown = "\n\n".join(s.get("text") or "" for s in sections)
+        sources = [a for s in sections for a in (s.get("annotations") or [])]
+        model = result.get("model_name")
+    else:
+        markdown = result.get("markdown") or ""
+        sources = result.get("sources") or []
+        model = result.get("model")
+    return {"markdown": markdown, "domains": _domains_from(sources),
+            "model": model, "checked_at": result.get("datetime")}
+
+
 def citation_structure(keyword: str, mention_terms: list[str] | None = None,
-                       country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE) -> dict:
+                       country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE,
+                       engine: str = "chat_gpt") -> dict:
     """Structural shape of the AI-generated answer actually cited for
     this keyword: does it lead with a list, how long is the opening,
     how many sources does it cite, which domains. ~$0.004/call.
     With `mention_terms`, also reports whether the answer text names any of
     them ("mentioned"), from the same response at no extra cost."""
-    body = [{"keyword": keyword, "language_code": language, "location_name": country, "force_web_search": True}]
-    res = _call("ai_optimization/chat_gpt/llm_scraper/live/advanced", body, timeout=130)
+    answer = fetch_answer(keyword, engine=engine, country=country, language=language)
+    if answer.get("error"):
+        return {"keyword": keyword, "error": answer["error"]}
     try:
-        task = res["tasks"][0]
-        if task.get("status_code") != 20000:
-            return {"keyword": keyword, "error": task.get("status_message")}
-        # The provider can answer status 20000 with "result": null (no answer
-        # produced for this keyword). Say so instead of a NoneType TypeError.
-        if not task.get("result"):
-            return {"keyword": keyword, "error": "provider returned no answer for this keyword (empty result)"}
-        result = task["result"][0]
-        markdown = result.get("markdown") or ""
-        sources = result.get("sources") or []
+        markdown = answer["markdown"]
+        domains = answer["domains"]
         # Measured from the point on: a first line that only restates the
         # question is dropped first. Mentions still read the whole answer.
         body_md = _drop_restated_heading(markdown, keyword)
@@ -353,19 +429,11 @@ def citation_structure(keyword: str, mention_terms: list[str] | None = None,
         detail_preview = strip_markdown(body_md[cutoff:])[:240]
         if len(strip_markdown(body_md[cutoff:])) > 240:
             detail_preview = detail_preview.rsplit(" ", 1)[0].rstrip(",;:") + "..."
-        # The provider can list the same domain twice (e.g. two different
-        # pages on bitwarden.com cited separately), which inflated both the
-        # visible list and num_sources_cited - a "9 sources" answer with 2
-        # duplicates is really 7 distinct sites. Deduped by domain, order
-        # preserved (first mention wins), before counting or truncating,
-        # so num_sources_cited and the list it describes always agree.
-        domains = []
-        for src in sources:
-            d = src.get("domain")
-            if d and d not in domains:
-                domains.append(d)
         return {
             "keyword": keyword,
+            "engine": engine,
+            "model": answer["model"],
+            "checked_at": answer["checked_at"],
             "country": country,
             "language": language,
             **parsed,
@@ -379,6 +447,64 @@ def citation_structure(keyword: str, mention_terms: list[str] | None = None,
         }
     except Exception as e:
         return {"keyword": keyword, "error": str(e)}
+
+
+MAX_SAMPLES = 5
+
+
+def sample_structures(keyword: str, samples: int, mention_terms: list[str] | None = None,
+                      country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE,
+                      engine: str = "chat_gpt") -> list[dict]:
+    """`samples` independent live answers for one keyword, fetched in parallel
+    (one answer takes 10-30s, so five in series would outlast most clients'
+    timeouts). Each entry is a citation_structure result or {"error"}; a
+    transport failure becomes an error entry instead of sinking the others.
+    Answers change from run to run, which is the whole reason to ask twice."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(_):
+        try:
+            return citation_structure(keyword, mention_terms=mention_terms, country=country,
+                                      language=language, engine=engine)
+        except DataForSEOError as e:
+            return {"keyword": keyword, "error": str(e), "transient": True}
+
+    with ThreadPoolExecutor(max_workers=samples) as pool:
+        return list(pool.map(one, range(samples)))
+
+
+def cited_questions(domain: str, platform: str = "chat_gpt", limit: int = 20,
+                    country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE) -> dict:
+    """Questions whose tracked AI answers cite `domain` as a source, most
+    asked first. Starts from the domain, so nobody has to guess keywords
+    first. ~$0.12/call at limit 20 (measured 2026-09-24)."""
+    body = [{"target": [{"domain": domain, "search_scope": ["sources"], "include_subdomains": True}],
+             "platform": platform, "location_name": country, "language_code": language,
+             "limit": limit, "order_by": ["ai_search_volume,desc"]}]
+    res = _call("ai_optimization/llm_mentions/search/live", body)
+    try:
+        task = res["tasks"][0]
+        if task.get("status_code") != 20000:
+            return {"domain": domain, "error": task.get("status_message")}
+        result = (task.get("result") or [{}])[0] or {}
+        target = domain.lower().removeprefix("www.")
+        questions = []
+        for it in result.get("items") or []:
+            domains = _domains_from(it.get("sources") or [])
+            position = next((i for i, d in enumerate(domains, 1)
+                             if d.lower().removeprefix("www.") == target
+                             or d.lower().endswith("." + target)), None)
+            questions.append({
+                "question": it.get("question"),
+                "ai_search_volume": it.get("ai_search_volume"),
+                "your_position": position,
+                "source_domains": domains[:10],
+                "last_seen": it.get("last_response_at"),
+            })
+        return {"domain": domain, "platform": platform, "country": country, "language": language,
+                "total_questions": result.get("total_count") or 0, "questions": questions}
+    except Exception as e:
+        return {"domain": domain, "error": str(e)}
 
 
 # A web page's markdown does not start where its content does. DataForSEO's
@@ -573,11 +699,12 @@ def _off_site_line(mix: dict) -> str:
 
 
 def citation_gap(keyword: str, your_url: str,
-                 country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE) -> dict:
+                 country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE,
+                 engine: str = "chat_gpt") -> dict:
     """Diff your own page's structure against the winning AI-cited
     answer's structure for the same keyword, as concrete gaps to close
     rather than two separate reports read side by side."""
-    winning = citation_structure(keyword, country=country, language=language)
+    winning = citation_structure(keyword, country=country, language=language, engine=engine)
     if winning.get("error"):
         return {"keyword": keyword, "your_url": your_url, "error": f"couldn't analyze the winning answer: {winning['error']}"}
     markdown, err = _page_markdown(your_url)
