@@ -63,8 +63,14 @@ Same as `analyze_citation_structure`, across up to 10 related topics in one call
 > "What do winning answers look like across this whole topic cluster?"
 
 ### `analyze_citation_gap`
-Diffs your own page's structure against the winning AI-cited answer for the same keyword and returns a `fix_brief`: ordered rewrite instructions your agent can carry out on the page (opening, sections, the answer's points your page does not cover, table, sources). The brief never contains the cited answer's text.
+Diffs your own page's structure against the winning AI-cited answer for the same keyword and returns a `fix_brief`: ordered rewrite instructions your agent can carry out on the page (opening, sections, the answer's points your page does not cover, table, sources), ending with one step beyond the page: which community sites or other websites the answer relies on. The brief never contains the cited answer's text.
 > "What should I actually change on this page to get cited?"
+
+### Source mix
+Every tool that returns cited domains also returns `source_mix`: how much of them are community sites (Reddit, YouTube, X, Quora and similar) and which. A high share means the topic is won by what people say about a brand elsewhere, not by any one site's pages.
+
+### Country and language
+Every tool except `get_usage` takes optional `country` (e.g. `"Italy"`) and `language` (e.g. `"it"`), default United States / `en`. Tools that read a live ChatGPT answer work in any supported market; `find_citation_leaders` and `analyze_citation_trend` only have ChatGPT data for the United States in English, so use `platform: "google"` for other countries.
 
 ## Example
 

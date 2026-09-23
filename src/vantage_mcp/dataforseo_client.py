@@ -16,6 +16,45 @@ import urllib.request
 
 API = "https://api.dataforseo.com/v3"
 
+# Market every check runs in unless the caller picks another. The live ChatGPT
+# answer (citation_structure) works in many countries and languages; the
+# llm_mentions family (citation_leaders, citation_trend) only has ChatGPT data
+# for the United States in English, which server.py enforces before calling.
+DEFAULT_COUNTRY = "United States"
+DEFAULT_LANGUAGE = "en"
+
+# Sites whose content is posted by their users rather than written by the site.
+# Answer engines lean on these heavily (the ZeroRank data, Niche Pursuits
+# podcast 2026-09-23, puts them at most of the weight), and they are the
+# off-site work a customer can actually go and do. Matched on the registrable
+# domain or any subdomain of it (old.reddit.com, m.youtube.com). Only this one
+# category is claimed: telling an editorial site from a niche blog or a brand's
+# own site needs data we do not have, so everything else is "other".
+COMMUNITY_DOMAINS = (
+    "reddit.com", "youtube.com", "youtu.be", "x.com", "twitter.com", "quora.com",
+    "linkedin.com", "facebook.com", "instagram.com", "tiktok.com", "medium.com",
+    "substack.com", "stackoverflow.com", "stackexchange.com", "tripadvisor.com",
+    "trustpilot.com", "g2.com", "capterra.com",
+)
+
+
+def is_community(domain: str) -> bool:
+    d = (domain or "").strip().lower().removeprefix("www.")
+    return any(d == c or d.endswith("." + c) for c in COMMUNITY_DOMAINS)
+
+
+def source_mix(domains: list[str], weights: list[int] | None = None) -> dict:
+    """How much of a set of cited domains is community sites, as a share of
+    the domains (or of `weights`, e.g. mention counts, when given)."""
+    weights = weights or [1] * len(domains)
+    total = sum(weights)
+    community_weight = sum(w for d, w in zip(domains, weights) if is_community(d))
+    return {
+        "community_pct": round(100 * community_weight / total, 1) if total else 0.0,
+        "community_domains": [d for d in domains if is_community(d)],
+        "other_domains": [d for d in domains if not is_community(d)],
+    }
+
 
 class DataForSEOError(RuntimeError):
     pass
@@ -69,7 +108,8 @@ def _first_group_list(d: dict) -> list:
     return []
 
 
-def citation_leaders(keyword: str, platform: str = "chat_gpt", limit: int = 5) -> dict:
+def citation_leaders(keyword: str, platform: str = "chat_gpt", limit: int = 5,
+                     country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE) -> dict:
     """Who dominates AI-answer citations for this keyword/topic, and
     whether the given domain shows up in that list. ~$0.15/call.
 
@@ -77,7 +117,8 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", limit: int = 5) -
     echoed in the result as `top_domains_limit` so a caller can tell
     "not in the top N" apart from "not cited anywhere" - those are different
     claims and this endpoint can only ever support the first one."""
-    body = [{"target": [{"keyword": keyword}], "items_list_limit": limit, "platform": platform}]
+    body = [{"target": [{"keyword": keyword}], "items_list_limit": limit, "platform": platform,
+             "location_name": country, "language_code": language}]
     res = _call("ai_optimization/llm_mentions/top_domains/live", body)
     try:
         items = res["tasks"][0]["result"][0]["items"]
@@ -85,8 +126,10 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", limit: int = 5) -
         for it in items:
             group = _first_group_list(it)
             leaders.append({"domain": it["key"], "mentions": group[0].get("mentions") if group else None})
-        return {"keyword": keyword, "platform": platform, "top_domains": leaders,
-                "top_domains_limit": limit}
+        return {"keyword": keyword, "platform": platform, "country": country, "language": language,
+                "top_domains": leaders, "top_domains_limit": limit,
+                "source_mix": source_mix([l["domain"] for l in leaders],
+                                         [l["mentions"] or 0 for l in leaders])}
     except Exception as e:
         # No "top_domains": [] here on purpose. An empty list next to an error
         # was previously indistinguishable from a real, confirmed-empty result -
@@ -97,7 +140,8 @@ def citation_leaders(keyword: str, platform: str = "chat_gpt", limit: int = 5) -
         return {"keyword": keyword, "platform": platform, "error": str(e)}
 
 
-def citation_trend(domain: str, platform: str = "chat_gpt") -> dict:
+def citation_trend(domain: str, platform: str = "chat_gpt",
+                   country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE) -> dict:
     """Month-by-month mention counts for a domain since DataForSEO's
     history began (2025-08-01), oldest to newest. Priced at $0/call on
     every real call made verifying this - unlike
@@ -106,7 +150,8 @@ def citation_trend(domain: str, platform: str = "chat_gpt") -> dict:
     zeros - real behavior found calling this live, not assumed from the
     docs - so that gets normalized to an explicit 0 here rather than
     silently dropped."""
-    body = [{"target": [{"domain": domain}], "platform": platform}]
+    body = [{"target": [{"domain": domain}], "platform": platform,
+             "location_name": country, "language_code": language}]
     res = _call("ai_optimization/llm_mentions/historical/live", body)
     try:
         items = res["tasks"][0]["result"][0]["items"]
@@ -270,13 +315,14 @@ def _has_table(markdown: str) -> bool:
     return bool(_TABLE_SEP_RE.search(markdown))
 
 
-def citation_structure(keyword: str, mention_terms: list[str] | None = None) -> dict:
+def citation_structure(keyword: str, mention_terms: list[str] | None = None,
+                       country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE) -> dict:
     """Structural shape of the AI-generated answer actually cited for
     this keyword: does it lead with a list, how long is the opening,
     how many sources does it cite, which domains. ~$0.004/call.
     With `mention_terms`, also reports whether the answer text names any of
     them ("mentioned"), from the same response at no extra cost."""
-    body = [{"keyword": keyword, "language_code": "en", "location_name": "United States", "force_web_search": True}]
+    body = [{"keyword": keyword, "language_code": language, "location_name": country, "force_web_search": True}]
     res = _call("ai_optimization/chat_gpt/llm_scraper/live/advanced", body, timeout=130)
     try:
         task = res["tasks"][0]
@@ -320,12 +366,15 @@ def citation_structure(keyword: str, mention_terms: list[str] | None = None) -> 
                 domains.append(d)
         return {
             "keyword": keyword,
+            "country": country,
+            "language": language,
             **parsed,
             "detail_preview": detail_preview,
             "outline": _outline(body_md),
             "has_table": _has_table(body_md),
             "num_sources_cited": len(domains[:10]),
             "source_domains": domains[:10],
+            "source_mix": source_mix(domains[:10]),
             **({"mentioned": mentions_any(markdown, mention_terms)} if mention_terms else {}),
         }
     except Exception as e:
@@ -494,18 +543,41 @@ def _fix_brief(keyword: str, winning: dict, yours: dict, missing: list[str]) -> 
             f"Cite at least {winning['num_sources_cited']} reputable external sources, linked next to "
             f"the claims they support; your page links out to {yours['num_links_out']}."
         )
-    if not brief:
-        return ["No structural change indicated: your page already matches the cited answer on "
-                "every check here, so the gap is more likely authority or freshness than shape."]
-    brief.append("Write every change in your own words from your own facts; do not copy the cited answer's wording.")
+    if brief:
+        brief.append("Write every change in your own words from your own facts; do not copy the cited answer's wording.")
+    else:
+        brief.append("No structural change indicated: your page already matches the cited answer on "
+                     "every check here, so the gap is most likely off-site, not on this page.")
+    brief.append(_off_site_line(winning.get("source_mix") or source_mix(winning.get("source_domains") or [])))
     return brief
 
 
-def citation_gap(keyword: str, your_url: str) -> dict:
+def _off_site_line(mix: dict) -> str:
+    """The off-site step, always last in the brief. Page shape gets a page into
+    the running; whether it is cited is decided mostly by what other sites say
+    about the brand, which is the work a page rewrite cannot do."""
+    if mix["community_domains"]:
+        return (
+            f"Beyond this page: {mix['community_pct']:g}% of the cited answer's sources are community "
+            f"sites ({', '.join(mix['community_domains'])}). Get your brand genuinely discussed there: "
+            "a useful answer in a relevant thread, a video walkthrough, a post people can react to. "
+            "Never fake accounts or bought comments."
+        )
+    others = ", ".join(mix["other_domains"][:3])
+    return (
+        "Beyond this page: the cited answer relies on other websites"
+        + (f" ({others})" if others else "")
+        + ", not community sites, so a mention or listing on sites like these matters more than a rewrite. "
+        "find_citation_leaders shows who else wins this topic."
+    )
+
+
+def citation_gap(keyword: str, your_url: str,
+                 country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE) -> dict:
     """Diff your own page's structure against the winning AI-cited
     answer's structure for the same keyword, as concrete gaps to close
     rather than two separate reports read side by side."""
-    winning = citation_structure(keyword)
+    winning = citation_structure(keyword, country=country, language=language)
     if winning.get("error"):
         return {"keyword": keyword, "your_url": your_url, "error": f"couldn't analyze the winning answer: {winning['error']}"}
     markdown, err = _page_markdown(your_url)

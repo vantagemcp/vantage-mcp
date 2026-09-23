@@ -59,6 +59,29 @@ def _guard_platform(platform: str) -> str | None:
         )
     return None
 
+
+def _market(country: str | None, language: str | None) -> tuple[str, str]:
+    """A caller's country/language, blanks falling back to the default market.
+    Values are passed to the provider as-is; one it does not support comes
+    back as a provider error, which each tool already refunds and reports."""
+    return ((country or "").strip() or dfs.DEFAULT_COUNTRY,
+            (language or "").strip().lower() or dfs.DEFAULT_LANGUAGE)
+
+
+def _guard_mentions_market(platform: str, country: str, language: str) -> str | None:
+    """The llm_mentions data behind find_citation_leaders and
+    analyze_citation_trend only covers ChatGPT in the United States, in
+    English (DataForSEO docs, checked 2026-09-24); Google's AI Overview data
+    covers more markets. Refused here, before any quota is spent."""
+    if platform == "chat_gpt" and (country.lower(), language) != (dfs.DEFAULT_COUNTRY.lower(), dfs.DEFAULT_LANGUAGE):
+        return (
+            'ChatGPT data for this check only exists for country "United States", language "en". '
+            'Use platform "google" (Google\'s AI Overview) for other markets, or '
+            "check_prompt_coverage / analyze_citation_structure, which read a live ChatGPT "
+            "answer in the market you choose."
+        )
+    return None
+
 # The SDK's DNS-rebinding protection validates the Host/Origin headers
 # against an explicit allowlist - leaving it unconfigured meant an empty
 # allowed_hosts list, which silently rejects every real request with a
@@ -227,7 +250,8 @@ def get_usage() -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
-def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: str | None = None) -> dict:
+def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: str | None = None,
+                          country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE) -> dict:
     """Find which domains dominate AI-answer citations for a topic/keyword,
     and optionally check whether a specific domain shows up among them.
     Use this to answer 'who's winning AI search for this topic' or
@@ -244,7 +268,11 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
     citations, only that it did not rank in the top `top_domains_limit`),
     "compare_domain_rank" (int|null, only present when compare_domain was
     passed: the domain's 1-based position in top_domains, or null if it
-    did not rank in the top `top_domains_limit`)}.
+    did not rank in the top `top_domains_limit`), "country", "language",
+    "source_mix" ({"community_pct" (share of these mentions that go to
+    community sites such as Reddit, YouTube, X, Quora), "community_domains",
+    "other_domains"}: a high community_pct means this topic is won by what
+    people say about a brand elsewhere, not by any one site's pages)}.
 
     This tool's citation universe is the provider's tracked mention corpus
     for the keyword, which is a different measurement from
@@ -262,8 +290,14 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
         compare_domain: optional bare domain to look up in the results
             (exact match against the registrable domain, e.g. "notion.so"
             will not match "mynotion.so.example.com").
+        country: market to check, e.g. "Italy". Defaults to "United States".
+            chat_gpt only has data for the United States; use platform
+            "google" for any other country.
+        language: language code, e.g. "it". Defaults to "en" (the only
+            option for chat_gpt).
     """
-    if err := _guard_platform(platform):
+    country, language = _market(country, language)
+    if err := _guard_platform(platform) or _guard_mentions_market(platform, country, language):
         _log_call("find_citation_leaders", "invalid_platform")
         return {"error": err}
     if err := _guard_balance():
@@ -273,7 +307,7 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
         _log_call("find_citation_leaders", "quota_denied")
         return {"error": err}
     try:
-        result = dfs.citation_leaders(keyword=keyword, platform=platform)
+        result = dfs.citation_leaders(keyword=keyword, platform=platform, country=country, language=language)
     except dfs.DataForSEOError:
         _refund_usage(10)
         _log_call("find_citation_leaders", "provider_error")
@@ -312,7 +346,8 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
-def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int = 6) -> dict:
+def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int = 6,
+                           country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE) -> dict:
     """Track how a domain's AI-citation count has moved month over month,
     so you can see whether visibility is growing or fading instead of
     only ever checking a single point in time. Use this to answer 'is our
@@ -346,8 +381,14 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
         months: how many recent months of history to return. Defaults to
             6, capped at 13 - DataForSEO's historical data only goes back
             to 2025-08-01.
+        country: market to check, e.g. "Italy". Defaults to "United States".
+            chat_gpt only has data for the United States; use platform
+            "google" for any other country.
+        language: language code, e.g. "it". Defaults to "en" (the only
+            option for chat_gpt).
     """
-    if err := _guard_platform(platform):
+    country, language = _market(country, language)
+    if err := _guard_platform(platform) or _guard_mentions_market(platform, country, language):
         _log_call("analyze_citation_trend", "invalid_platform")
         return {"error": err}
     if err := _guard_balance():
@@ -357,7 +398,7 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
         _log_call("analyze_citation_trend", "quota_denied")
         return {"error": err}
     try:
-        result = dfs.citation_trend(domain=domain, platform=platform)
+        result = dfs.citation_trend(domain=domain, platform=platform, country=country, language=language)
     except dfs.DataForSEOError:
         _refund_usage(1)
         _log_call("analyze_citation_trend", "provider_error")
@@ -396,11 +437,13 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
             trend["excluded_current_partial_month"] = True
 
     _log_call("analyze_citation_trend", "success")
-    return {"domain": domain, "platform": platform, "months": window, "trend": trend}
+    return {"domain": domain, "platform": platform, "country": country, "language": language,
+            "months": window, "trend": trend}
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
-def analyze_citation_structure(keyword: str) -> dict:
+def analyze_citation_structure(keyword: str, country: str = dfs.DEFAULT_COUNTRY,
+                               language: str = dfs.DEFAULT_LANGUAGE) -> dict:
     """Analyze the structural shape of the AI-generated answer actually
     cited for a keyword: does it lead with a list, how long is the opening
     passage, how many sources does it cite and from which domains. Use
@@ -416,7 +459,10 @@ def analyze_citation_structure(keyword: str) -> dict:
     heads, in order: the answer's headings, or its top-level list items when it
     has fewer than two headings; heads only, never the text under them),
     "has_table" (bool), "num_sources_cited" (int),
-    "source_domains" (list of up to 10 domain strings)}.
+    "source_domains" (list of up to 10 domain strings), "source_mix"
+    ({"community_pct" (share of those sources that are community sites such
+    as Reddit, YouTube, X, Quora), "community_domains", "other_domains"}),
+    "country", "language"}.
 
     Use analyze_citation_structure_batch instead if you need this for more than
     one keyword - one call per topic here adds up fast for a cluster. Use
@@ -425,7 +471,12 @@ def analyze_citation_structure(keyword: str) -> dict:
 
     Args:
         keyword: the topic/query to analyze, e.g. "how to reduce churn".
+        country: market to read the answer in, e.g. "Italy". Defaults to
+            "United States".
+        language: language code, e.g. "it". Defaults to "en". Write the
+            keyword in that language too.
     """
+    country, language = _market(country, language)
     if err := _guard_balance():
         _log_call("analyze_citation_structure", "balance_denied")
         return {"error": err}
@@ -433,7 +484,7 @@ def analyze_citation_structure(keyword: str) -> dict:
         _log_call("analyze_citation_structure", "quota_denied")
         return {"error": err}
     try:
-        result = dfs.citation_structure(keyword=keyword)
+        result = dfs.citation_structure(keyword=keyword, country=country, language=language)
     except dfs.DataForSEOError:
         _refund_usage(1)
         _log_call("analyze_citation_structure", "provider_error")
@@ -451,7 +502,8 @@ def analyze_citation_structure(keyword: str) -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
-def analyze_citation_structure_batch(keywords: list[str]) -> dict:
+def analyze_citation_structure_batch(keywords: list[str], country: str = dfs.DEFAULT_COUNTRY,
+                                     language: str = dfs.DEFAULT_LANGUAGE) -> dict:
     """Analyze the structural shape of the winning AI answer across several
     related keywords/topics in one call: does each lead with a list, how
     long is the opening, how many sources it cites. Use this for content
@@ -468,12 +520,17 @@ def analyze_citation_structure_batch(keywords: list[str]) -> dict:
     Returns: {"results" (list, one {"keyword", ...same shape as
     analyze_citation_structure, or "error"} per keyword, in the order given),
     "summary": {"topics_analyzed", "topics_requested", "list_led_count",
-    "avg_sources_cited"}}.
+    "avg_sources_cited", "avg_community_pct" (average source_mix.community_pct
+    across the analyzed topics)}}.
 
     Args:
         keywords: topics/queries to analyze, e.g. ["how to reduce churn",
             "churn rate benchmarks", "reduce customer churn saas"]. Max 10.
+        country: market to read the answers in, e.g. "Italy". Defaults to
+            "United States".
+        language: language code, e.g. "it". Defaults to "en".
     """
+    country, language = _market(country, language)
     if not keywords:
         return {
             "error": (
@@ -500,7 +557,7 @@ def analyze_citation_structure_batch(keywords: list[str]) -> dict:
             results.append({"keyword": kw, "error": err})
             continue
         try:
-            result = dfs.citation_structure(keyword=kw)
+            result = dfs.citation_structure(keyword=kw, country=country, language=language)
         except dfs.DataForSEOError:
             # A per-keyword provider error must not sink the whole batch -
             # this call already consumed one unit of usage above, so it is
@@ -531,12 +588,17 @@ def analyze_citation_structure_batch(keywords: list[str]) -> dict:
             round(sum(r.get("num_sources_cited", 0) for r in analyzed) / len(analyzed), 1)
             if analyzed else 0
         ),
+        "avg_community_pct": (
+            round(sum(r["source_mix"]["community_pct"] for r in analyzed) / len(analyzed), 1)
+            if analyzed else 0
+        ),
     }
     return {"results": results, "summary": summary}
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
-def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = None) -> dict:
+def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = None,
+                          country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE) -> dict:
     """Check which of several prompts/keywords actually cite a specific
     domain, and which ones don't. This is usually the first real question
     in an AI-answer-engine audit - not "what does a winning answer look
@@ -560,7 +622,9 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
     given: {"keyword", "cited" (bool), "rank" (int|null, 1-based position
     among that answer's sources - present even when cited is false, so you
     can tell "just missed it" from "not in the running"), "num_sources_cited",
-    "source_domains" (who IS cited, for a keyword you are not in), "leads_with_list",
+    "source_domains" (who IS cited, for a keyword you are not in), "source_mix"
+    (how much of that is community sites such as Reddit, YouTube, X - where
+    to get discussed to close the gap), "leads_with_list",
     "opening_word_count", "mentioned" (bool - the answer's text names the
     domain or brand, whether or not it links to it)}, or {"keyword",
     "error"} for one that failed), "keywords_mentioned" (int),
@@ -578,7 +642,12 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
             "Notion". Without it, the domain's first label is used ("notion"
             for notion.so), which can match an ordinary word by accident for
             a dictionary-word domain, so pass the real brand when known.
+        country: market to read the answers in, e.g. "Italy". Defaults to
+            "United States".
+        language: language code, e.g. "it". Defaults to "en". Write the
+            keywords in that language too.
     """
+    country, language = _market(country, language)
     if not domain or not domain.strip():
         return {"error": "domain is empty - pass a bare domain, e.g. \"example.com\"."}
     if not keywords:
@@ -610,7 +679,8 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
             results.append({"keyword": kw, "error": err})
             continue
         try:
-            result = dfs.citation_structure(keyword=kw, mention_terms=mention_terms)
+            result = dfs.citation_structure(keyword=kw, mention_terms=mention_terms,
+                                            country=country, language=language)
         except dfs.DataForSEOError:
             # Same shape as analyze_citation_structure_batch: a per-keyword
             # provider error must not sink the whole call, and the unit
@@ -645,6 +715,7 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
             "rank": rank,
             "num_sources_cited": result.get("num_sources_cited"),
             "source_domains": domains,
+            "source_mix": result.get("source_mix"),
             "leads_with_list": result.get("leads_with_list"),
             "opening_word_count": result.get("opening_word_count"),
             "mentioned": bool(result.get("mentioned")),
@@ -654,6 +725,8 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
     cited = [r for r in checked if r["cited"]]
     return {
         "domain": domain,
+        "country": country,
+        "language": language,
         "keywords_checked": len(checked),
         "keywords_cited": len(cited),
         "coverage_pct": round(100 * len(cited) / len(checked), 1) if checked else 0.0,
@@ -666,7 +739,8 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
 
 
 @mcp.tool(annotations=READ_ONLY_EXTERNAL)
-def analyze_citation_gap(keyword: str, your_url: str) -> dict:
+def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT_COUNTRY,
+                         language: str = dfs.DEFAULT_LANGUAGE) -> dict:
     """Compare your own page's structure against the AI-generated answer
     actually cited for this keyword, and return a fix brief: ordered
     rewrite instructions for your page, not just a description of the
@@ -688,8 +762,12 @@ def analyze_citation_gap(keyword: str, your_url: str) -> dict:
     mostly do not appear on your page; word matching, so check each before
     adding it), "fix_brief" (list of instructions, most important first:
     opening, number, list, sections, missing points, table, sources, then a
-    reminder to write in your own words; a single "no structural change
-    indicated" line when every check already matches)}, or {"error"} if
+    reminder to write in your own words - or a "no structural change
+    indicated" line when every check already matches - and always last, one
+    off-site step drawn from the winning answer's source_mix: which community
+    sites (Reddit, YouTube, X...) it cites, or which other sites to get
+    mentioned on. Page shape gets a page into the running; being cited is
+    decided mostly by what other sites say about the brand)}, or {"error"} if
     either side couldn't be fetched/parsed.
 
     Use analyze_citation_structure instead if you just want the winning
@@ -702,7 +780,11 @@ def analyze_citation_gap(keyword: str, your_url: str) -> dict:
         keyword: the topic/query to check, e.g. "best project management tool".
         your_url: full URL of your own page to compare, e.g.
             "https://example.com/best-project-management-tools".
+        country: market to read the cited answer in, e.g. "Italy". Defaults
+            to "United States".
+        language: language code, e.g. "it". Defaults to "en".
     """
+    country, language = _market(country, language)
     if err := _guard_balance():
         _log_call("analyze_citation_gap", "balance_denied")
         return {"error": err}
@@ -710,7 +792,7 @@ def analyze_citation_gap(keyword: str, your_url: str) -> dict:
         _log_call("analyze_citation_gap", "quota_denied")
         return {"error": err}
     try:
-        result = dfs.citation_gap(keyword=keyword, your_url=your_url)
+        result = dfs.citation_gap(keyword=keyword, your_url=your_url, country=country, language=language)
     except dfs.DataForSEOError:
         _refund_usage(1)
         _log_call("analyze_citation_gap", "provider_error")

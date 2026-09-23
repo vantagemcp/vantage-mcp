@@ -4,9 +4,12 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
-## [1.7.0] - 2026-09-23
+## [1.7.0] - 2026-09-24
 
 ### Added
+- `source_mix` on every tool that returns cited domains (`find_citation_leaders`, `analyze_citation_structure` and its batch form, `check_prompt_coverage`, and the winning side of `analyze_citation_gap`): `community_pct`, `community_domains` and `other_domains`. Community means sites whose content is posted by their users, such as Reddit, YouTube, X and Quora, subdomains included. `find_citation_leaders` weights the share by mention count; the others count domains. The batch summary adds `avg_community_pct`. Worked out from data already fetched, with no extra provider calls. Only the community category is claimed; everything else is "other".
+- Optional `country` (for example `"Italy"`) and `language` (for example `"it"`) on every tool except `get_usage`. The default is United States, `en`, as before. Tools that read a live ChatGPT answer accept any market the provider supports. `find_citation_leaders` and `analyze_citation_trend` only have ChatGPT data for the United States in English, so another market on `chat_gpt` is refused before any units are spent; use `platform: "google"` there. Results echo the market they were read in.
+- `analyze_citation_gap`'s `fix_brief` always ends with one step beyond the page, drawn from the winning answer's `source_mix`: which community sites it relies on, or which other sites to get mentioned on. A page that already matches every check is told the gap is most likely off-site.
 - `analyze_citation_gap` returns `fix_brief`: the changes to make on your page, most important first (a direct opening, a number, a list, the section count, missing points, a table, sources), ending with a reminder to write in your own words. When every check already matches it returns a single "no structural change indicated" line. The brief is built from the same two provider responses as before, with no extra calls and no LLM on the server; your agent does the rewriting.
 - `analyze_citation_gap` returns `possibly_missing`: section heads from the cited answer whose key words mostly do not appear anywhere on your page. It is word matching, not meaning, so a point covered in other words can be listed; check each before acting on it.
 - `analyze_citation_structure` and both sides of `analyze_citation_gap` return `outline` (up to 12 section heads in order: headings, or top-level list items when there are fewer than two headings; numbering removed, repeats dropped, heads only) and `has_table`.
