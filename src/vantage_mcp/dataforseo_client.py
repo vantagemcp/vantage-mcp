@@ -376,7 +376,15 @@ def fetch_answer(keyword: str, engine: str = "chat_gpt",
                  "force_web_search": True}]
         path = "ai_optimization/chat_gpt/llm_scraper/live/advanced"
     res = _call(path, body, timeout=130)
-    task = res["tasks"][0]
+    # The provider can reply with no task at all ("tasks": null) when the
+    # request fails as a whole, e.g. a rate or account limit. Found 2026-09-24
+    # when it crashed the first research run 13 minutes in; before 1.8.0 this
+    # parse sat inside citation_structure's try, after it, it raised through
+    # every live tool. Treated as transient: the caller retries or refunds.
+    tasks = (res or {}).get("tasks") or []
+    if not tasks:
+        return {"error": (res or {}).get("status_message") or "provider returned no task", "transient": True}
+    task = tasks[0]
     if task.get("status_code") != 20000:
         return {"error": task.get("status_message")}
     # The provider can answer status 20000 with "result": null (no answer
@@ -407,7 +415,7 @@ def citation_structure(keyword: str, mention_terms: list[str] | None = None,
     them ("mentioned"), from the same response at no extra cost."""
     answer = fetch_answer(keyword, engine=engine, country=country, language=language)
     if answer.get("error"):
-        return {"keyword": keyword, "error": answer["error"]}
+        return {"keyword": keyword, "error": answer["error"], **({"transient": True} if answer.get("transient") else {})}
     try:
         markdown = answer["markdown"]
         domains = answer["domains"]

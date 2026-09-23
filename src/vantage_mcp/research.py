@@ -33,12 +33,15 @@ def load_keywords(path: str) -> list[tuple[str, str]]:
 def _measure(job: tuple[str, str, str]) -> dict:
     category, keyword, engine = job
     row = {"category": category, "keyword": keyword, "engine": engine}
+    # One bad answer must never sink a 600-answer run: anything that goes
+    # wrong becomes a failed row (counted and shown on the page), with its
+    # message kept for diagnosis.
     try:
         r = dfs.citation_structure(keyword, engine=engine)
-    except dfs.DataForSEOError:
-        return {**row, "error": True}
+    except Exception as e:  # noqa: BLE001
+        return {**row, "error": f"{type(e).__name__}: {e}"[:200]}
     if r.get("error"):
-        return {**row, "error": True}
+        return {**row, "error": str(r["error"])[:200]}
     return {**row, "model": r.get("model"), "source_domains": r.get("source_domains") or [],
             "leads_with_list": bool(r.get("leads_with_list")), "has_table": bool(r.get("has_table")),
             "opening_word_count": r.get("opening_word_count") or 0}
@@ -53,6 +56,13 @@ def run_month(keywords_path: str, out_dir: str, engines=dfs.ENGINES, workers: in
     jobs = [(c, k, e) for c, k in keywords for e in engines]
     with ThreadPoolExecutor(max_workers=workers) as pool:
         answers = list(pool.map(_measure, jobs))
+    failed = [a for a in answers if a.get("error")]
+    reasons: dict[str, int] = {}
+    for a in failed:
+        reasons[a["error"]] = reasons.get(a["error"], 0) + 1
+    print(f"{len(answers) - len(failed)} of {len(answers)} answers measured; failures: {reasons}", flush=True)
+    if len(failed) * 2 > len(answers):
+        raise SystemExit("more than half the answers failed; not publishing this month over the last good one")
     now = datetime.now(timezone.utc)
     data = {"month": now.strftime("%Y-%m"), "generated_at": now.isoformat(timespec="seconds"),
             "keywords": len(keywords), "engines": list(engines), "answers": answers}
