@@ -421,6 +421,22 @@ def _question_index(questions: dict[str, list[str]], base_url: str) -> str:
             f"<div class='rs-topics'>{groups}</div></section>")
 
 
+def qa_page_ld(question: str, answer: str, url: str, base_url: str, created: str | None = None) -> dict:
+    """QAPage JSON-LD with the fields Search Console's Q&A report checks.
+
+    Vantage writes both the question and the measured answer, so it is the author
+    of each, and nobody votes on them, so upvoteCount is an honest 0. `created`
+    must be a full ISO datetime with its UTC offset: a bare date is flagged as
+    invalid and missing a timezone."""
+    author = {"@type": "Organization", "name": "Vantage", "url": base_url}
+    q = {"@type": "Question", "name": question, "text": question, "answerCount": 1, "author": author,
+         "acceptedAnswer": {"@type": "Answer", "text": answer, "url": url, "author": author, "upvoteCount": 0}}
+    if created:
+        for d in (q, q["acceptedAnswer"]):
+            d["dateCreated"] = d["datePublished"] = created
+    return {"@context": "https://schema.org", "@type": "QAPage", "mainEntity": q}
+
+
 def render_question(data: dict, question_slug: str, base_url: str,
                     prev_data: dict | None = None) -> tuple[str, str, str] | None:
     """(title, body_html, head_extra) for one question's page, or None if the
@@ -519,12 +535,8 @@ three engines, and it will tell you whether you are cited, who is instead, and w
 <p class="rs-note">Each engine was asked once, in English, as from the United States, on {esc(data['generated_at'][:10])}.
 Answers change from run to run, so read this as a snapshot. <a href="{base_url}/research/data.json">Download the data</a>.</p>"""
 
-    ld = {"@context": "https://schema.org", "@type": "QAPage",
-          "mainEntity": {"@type": "Question", "name": question_text, "answerCount": 1,
-                         "dateCreated": data["generated_at"][:10],
-                         "acceptedAnswer": {"@type": "Answer", "text": summary,
-                                            "url": f"{base_url}/research/{question_slug}",
-                                            "author": {"@type": "Organization", "name": "Vantage"}}}}
+    ld = qa_page_ld(question_text, summary, f"{base_url}/research/{question_slug}", base_url,
+                    created=data["generated_at"])
     head = (f'<meta name="description" content="{esc(summary[:155], quote=True)}">\n'
             f'<link rel="canonical" href="{base_url}/research/{question_slug}">\n'
             f'<script type="application/ld+json">{json.dumps(ld)}</script>')
