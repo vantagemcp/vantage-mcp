@@ -385,7 +385,8 @@ opening is. Never the answer text. "Community sites" are sites whose content is 
 YouTube, X, Quora, LinkedIn, Medium, review sites and similar). A site counts once per answer however many of its
 pages are cited. Answers change from run to run, so treat single rows as a snapshot and the totals as the finding.
 {o['failed']} of {o['answers'] + o['failed']} requests failed and are left out. Measured on
-{esc(agg['generated_at'][:10])}; the same questions run again on {esc(nxt)}.</p></details>"""
+{esc(agg['generated_at'][:10])}; the same questions run again on {esc(nxt)}. The data is free to reuse under
+<a href="https://creativecommons.org/licenses/by/4.0/" rel="license">CC BY 4.0</a>, crediting Vantage.</p></details>"""
 
     dataset = {
         "@context": "https://schema.org", "@type": "Dataset",
@@ -395,6 +396,7 @@ pages are cited. Answers change from run to run, so treat single rows as a snaps
         "temporalCoverage": agg["month"],
         "dateModified": agg["generated_at"][:10],
         "creator": {"@type": "Organization", "name": "Vantage", "url": base_url},
+        "license": "https://creativecommons.org/licenses/by/4.0/",
         "distribution": [{"@type": "DataDownload", "encodingFormat": "application/json",
                           "contentUrl": f"{base_url}/research/data.json"}],
         "variableMeasured": ["community share of cited sites", "sites cited per answer",
