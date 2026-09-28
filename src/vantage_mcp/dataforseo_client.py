@@ -355,11 +355,128 @@ def _domains_from(sources: list[dict]) -> list[str]:
     return domains
 
 
+MAX_BRANDS = 15
+
+# Brand names are read from where an answer puts the things it recommends: the
+# first column of a table, a heading ("### 2. Attio"), and a bold name at the
+# start of a list item or line ("- **Zoho CRM** - for..."). The provider's own
+# `brand_entities` field was null on every live answer checked on 2026-09-29,
+# although its docs describe it, so it is not used.
+# Headings, table separators and numbering reuse the outline's own patterns
+# (_HEADING_RE, _TABLE_SEP_RE, _NUMBERING_RE above).
+_BRAND_ITEM_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+)?\*\*([^*]{1,60})\*\*")
+_BRAND_CUT_RE = re.compile(r"\s+[-–—|/]\s+|[:(–—]")
+_FEATURE_HEADERS = {"", "feature", "features", "category", "aspect", "criteria", "area", "factor", "metric",
+                    "comparison", "dimension", "use case", "need", "if you need", "what you need"}
+# First words of labels and section titles, never of a product's name.
+_NOT_A_NAME = set("""best why trade pros cons price pricing bottom verdict overall summary recommendation
+recommended recommendations my the a an for if what how when which who key note notes tip tips option options
+alternative alternatives top quick final conclusion comparison feature features choose choosing one two three
+important other others also honorable budget free paid pick picks shortlist winner use used good great strong
+it this these that those don't do does step steps example table tool tools platform platforms category criteria
+cost costs plan plans trial ideal main your you we our consider considerations here there bonus runner
+runners standout standouts caveat caveats limitations limitation drawbacks drawback strengths strength
+weaknesses weakness in on at by with without and or but not no yes all most more less simple simplest
+easiest cheapest fastest technical local content keyword keywords backlinks backlink rank marketing
+enterprise small large startups startup agencies agency teams team beginners advanced basic integrated
+industry broader where trade-off trade-offs downside downsides upside notable watch starting integrations
+integration support setup learning ease security scalability customization automation reporting value
+target audience verdict: ideal limits availability performance reliability onboarding""".split())
+# Short words a multi-word product name can carry in lower case.
+_NAME_CONNECTORS = {"of", "for", "and", "&", "by", "the", "de", "/", "+", "x"}
+# Last words of the criteria an answer bolds ("**Engine Coverage:**",
+# "**Tracking Method:**"), never of a product's name.
+_CRITERIA_ENDINGS = set("""coverage method methods insights insight features pricing tracking reporting data
+accuracy value cost costs speed quality usability flexibility compliance depth breadth frequency sources
+metrics capabilities approach strategy goals needs size fit experience interface workflow workflows
+customization considerations factors criteria requirements use cases""".split())
+_ACRONYM_COMBO_RE = re.compile(r"^[A-Z]{2,5}(?:\s*[+/&]\s*[A-Z]{2,5})+$")
+
+
+def _clean_name(text: str) -> str:
+    t = _NUMBERING_RE.sub("", strip_markdown(text).lstrip("#").strip())
+    t = _BRAND_CUT_RE.split(t, maxsplit=1)[0]
+    return " ".join(t.strip(" .,*_").split())
+
+
+def _looks_like_name(name: str, labels: set[str]) -> bool:
+    words = name.split()
+    if not 1 <= len(words) <= 5 or len(name) > 40 or name.endswith(":"):
+        return False
+    if words[0].lower().strip("'’") in _NOT_A_NAME or re.fullmatch(r"[\d\s.,%$]+", name):
+        return False
+    if re.search(r"\b(vs|versus)\b|[?!]", name, re.I) or _ACRONYM_COMBO_RE.match(name):
+        return False
+    if len(words) > 1 and words[-1].lower() in _CRITERIA_ENDINGS:
+        return False
+    # "Help Scout", "monday CRM", "Jira Service Management": after the first
+    # word, a product name capitalises its words. "Where Ahrefs stands out"
+    # and "Rank tracking" are section labels.
+    if any(w[0].islower() and w.lower() not in _NAME_CONNECTORS for w in words[1:]):
+        return False
+    # A product name has a capital letter somewhere ("monday CRM"), or matches
+    # a site the answer cites ("folk" and folk.app).
+    return bool(re.search(r"[A-Z]", name)) or re.sub(r"[^a-z0-9]", "", name.lower()) in labels
+
+
+def extract_brands(markdown: str, domains: list[str] | None = None) -> list[str]:
+    """Names an answer recommends, first-seen order, deduped by case. Names
+    only: a measurement, like source_domains, never answer text. Never
+    raises, since the monthly research run fails a whole row on an exception."""
+    try:
+        return _extract_brands(markdown, domains)
+    except Exception:  # noqa: BLE001 - every live tool calls this; it may only ever return fewer names
+        return []
+
+
+def _extract_brands(markdown: str, domains: list[str] | None) -> list[str]:
+    labels = {re.sub(r"[^a-z0-9]", "", d.lower().removeprefix("www.").split(".")[0]) for d in domains or []}
+    found: list[str] = []
+    lines = (markdown or "").splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("|") and i + 1 < len(lines) and _TABLE_SEP_RE.match(lines[i + 1].strip()):
+            header = [_clean_name(c) for c in line.strip("|").split("|")]
+            j, body = i + 2, []
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                body.append(lines[j].strip().strip("|").split("|"))
+                j += 1
+            if header and header[0].lower() in _FEATURE_HEADERS:
+                found += header[1:]  # brands across the top, features down the side
+            else:
+                found += [_clean_name(r[0]) for r in body if r]
+            i = j
+            continue
+        m = _HEADING_RE.match(line)
+        if m:
+            found.append(_clean_name(m.group(1)))
+        else:
+            # "**Zoho CRM** - ..." and Gemini's "**Semrush (AI Visibility
+            # Toolkit):** ...". Labels such as "**Best For:**" fall to the
+            # first-word check in _looks_like_name.
+            m = _BRAND_ITEM_RE.match(line)
+            if m:
+                found.append(_clean_name(m.group(1)))
+        i += 1
+    out: list[str] = []
+    for name in found:
+        if not _looks_like_name(name, labels):
+            continue
+        # "Otterly" after "Otterly AI" (or the other way round) is the same
+        # product named twice: keep the first spelling.
+        low = name.lower().split()
+        if any(low == n.lower().split()[:len(low)] or n.lower().split() == low[:len(n.split())] for n in out):
+            continue
+        out.append(name)
+    return out[:MAX_BRANDS]
+
+
 def fetch_answer(keyword: str, engine: str = "chat_gpt",
                  country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE) -> dict:
     """One live answer from `engine`, normalised to {"markdown", "domains",
-    "model", "checked_at"} or {"error"}. Raises DataForSEOError on transport
-    failure, like every other call here."""
+    "brands", "model", "checked_at"} or {"error"}. Raises DataForSEOError on
+    transport failure, like every other call here."""
     if engine == "perplexity":
         iso = country_iso(country)
         if not iso:
@@ -401,18 +518,22 @@ def fetch_answer(keyword: str, engine: str = "chat_gpt",
         markdown = result.get("markdown") or ""
         sources = result.get("sources") or []
         model = result.get("model")
-    return {"markdown": markdown, "domains": _domains_from(sources),
+    domains = _domains_from(sources)
+    return {"markdown": markdown, "domains": domains, "brands": extract_brands(markdown, domains),
             "model": model, "checked_at": result.get("datetime")}
 
 
 def citation_structure(keyword: str, mention_terms: list[str] | None = None,
                        country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE,
-                       engine: str = "chat_gpt") -> dict:
+                       engine: str = "chat_gpt", with_brands: bool = False) -> dict:
     """Structural shape of the AI-generated answer actually cited for
     this keyword: does it lead with a list, how long is the opening,
     how many sources does it cite, which domains. ~$0.004/call.
     With `mention_terms`, also reports whether the answer text names any of
-    them ("mentioned"), from the same response at no extra cost."""
+    them ("mentioned"), from the same response at no extra cost.
+    With `with_brands`, adds "brands": the brand names the answer names
+    (ChatGPT and Gemini only; always [] for Perplexity). Off by default so
+    the MCP tools' responses keep their documented shape."""
     answer = fetch_answer(keyword, engine=engine, country=country, language=language)
     if answer.get("error"):
         return {"keyword": keyword, "error": answer["error"], **({"transient": True} if answer.get("transient") else {})}
@@ -452,6 +573,7 @@ def citation_structure(keyword: str, mention_terms: list[str] | None = None,
             "source_domains": domains[:10],
             "source_mix": source_mix(domains[:10]),
             **({"mentioned": mentions_any(markdown, mention_terms)} if mention_terms else {}),
+            **({"brands": answer.get("brands") or []} if with_brands else {}),
         }
     except Exception as e:
         return {"keyword": keyword, "error": str(e)}
@@ -511,6 +633,49 @@ def cited_questions(domain: str, platform: str = "chat_gpt", limit: int = 20,
             })
         return {"domain": domain, "platform": platform, "country": country, "language": language,
                 "total_questions": result.get("total_count") or 0, "questions": questions}
+    except Exception as e:
+        return {"domain": domain, "error": str(e)}
+
+
+# Whole words that make a search a buying question. Whole words matter: a
+# bare "app" matched "whatsapp" and filled a CRM's list with WhatsApp how-tos.
+BUYER_SEARCH_RE = (r"(^| )(best|top|vs|versus|alternatives?|reviews?|compare|comparison|software|tools?"
+                   r"|apps?|platforms?|crm|pricing)( |$)")
+
+
+def ranked_keywords(domain: str, limit: int = 30, max_position: int = 10,
+                    country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE) -> dict:
+    """Buying-type Google searches `domain` already ranks for in the top
+    `max_position`, most searched first: {"domain", "keywords": [{"keyword",
+    "search_volume", "position", "url", "intent"}]} or {"error"}. Buying-type
+    means commercial or transactional intent, or a BUYER_SEARCH_RE word, and
+    never navigational: unfiltered, a CRM's top searches were JavaScript and
+    WhatsApp how-tos its blog happens to rank for. The free site check starts
+    here. $0.0152-0.0156 at limit 30, measured live 2026-09-29."""
+    body = [{"target": domain, "location_name": country, "language_code": language, "limit": limit,
+             "order_by": ["keyword_data.keyword_info.search_volume,desc"],
+             "filters": [["ranked_serp_element.serp_item.rank_group", "<=", max_position], "and",
+                         ["keyword_data.search_intent_info.main_intent", "<>", "navigational"], "and",
+                         [["keyword_data.search_intent_info.main_intent", "in", ["commercial", "transactional"]],
+                          "or", ["keyword_data.keyword", "regex", BUYER_SEARCH_RE]]]}]
+    res = _call("dataforseo_labs/google/ranked_keywords/live", body, timeout=60)
+    try:
+        task = res["tasks"][0]
+        if task.get("status_code") != 20000:
+            return {"domain": domain, "error": task.get("status_message")}
+        result = (task.get("result") or [{}])[0] or {}
+        out = []
+        for it in result.get("items") or []:
+            kd = it.get("keyword_data") or {}
+            serp = (it.get("ranked_serp_element") or {}).get("serp_item") or {}
+            out.append({
+                "keyword": kd.get("keyword"),
+                "search_volume": (kd.get("keyword_info") or {}).get("search_volume") or 0,
+                "position": serp.get("rank_group"),
+                "url": serp.get("url"),
+                "intent": (kd.get("search_intent_info") or {}).get("main_intent"),
+            })
+        return {"domain": domain, "keywords": [k for k in out if k["keyword"]]}
     except Exception as e:
         return {"domain": domain, "error": str(e)}
 

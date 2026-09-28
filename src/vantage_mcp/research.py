@@ -1,22 +1,33 @@
-"""Monthly public research: the same 200 keywords asked of every answer
-engine, and what the answers cite. Published at vantagemcp.dev/research as
-original data an answer engine (or a person) can quote.
+"""Monthly public research: the same questions asked of every answer engine,
+and what the answers cite. Published at vantagemcp.dev/research as original
+data an answer engine (or a person) can quote.
+
+Two question sets, kept apart so each stays comparable month to month:
+  everyday  the original 200 (deploy/research/keywords.txt), /research
+  buyer     questions software buyers ask (buyer-keywords.txt, from the
+            November 2026 edition), /research/software, with the brands each
+            answer names (added 2026-09-29)
 
 run_month() is the monthly job (deploy/vantage-research.timer); aggregate()
-and render() are pure, so the page is tested without spending anything.
-Only measured fields are kept per answer: never the answer text.
+and the render functions are pure, so the pages are tested without spending
+anything. Only measurements are kept per answer, never the answer text: the
+sites it cites, its shape, and the names of the brands it recommends.
 """
 
 import html
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from vantage_mcp import dataforseo_client as dfs
 
-MIN_BALANCE_USD = 5.0  # a month costs ~$2.60; never let it take the account near the floor
+MIN_BALANCE_USD = 5.0  # a month costs ~$4.60 with both sets; never let it take the account near the floor
 TOP_DOMAINS = 12
+EVERYDAY = "everyday"
+BUYER = "buyer"
+TOP_BRANDS = 8
 
 
 def load_keywords(path: str) -> list[tuple[str, str]]:
@@ -30,30 +41,53 @@ def load_keywords(path: str) -> list[tuple[str, str]]:
     return out
 
 
-def _measure(job: tuple[str, str, str]) -> dict:
-    category, keyword, engine = job
-    row = {"category": category, "keyword": keyword, "engine": engine}
-    # One bad answer must never sink a 600-answer run: anything that goes
+def read_set(path: str) -> dict:
+    """A keyword file plus its header directives: `# set: <name>` (default
+    everyday) and `# starts: YYYY-MM`, the first edition to include it."""
+    meta = {"set": EVERYDAY, "starts": None}
+    with open(path) as f:
+        for line in f:
+            m = re.match(r"#\s*(set|starts)\s*:\s*(\S+)", line.strip())
+            if m:
+                meta[m.group(1)] = m.group(2)
+    return {**meta, "keywords": load_keywords(path)}
+
+
+def set_of(answer: dict) -> str:
+    """Rows written before sets existed (September 2026) are everyday rows."""
+    return answer.get("set") or EVERYDAY
+
+
+def _measure(job: tuple) -> dict:
+    category, keyword, engine, *rest = job
+    set_name = rest[0] if rest else EVERYDAY
+    row = {"category": category, "keyword": keyword, "engine": engine, "set": set_name}
+    # One bad answer must never sink a 1,000-answer run: anything that goes
     # wrong becomes a failed row (counted and shown on the page), with its
     # message kept for diagnosis.
     try:
-        r = dfs.citation_structure(keyword, engine=engine)
+        r = dfs.citation_structure(keyword, engine=engine, with_brands=True)
     except Exception as e:  # noqa: BLE001
         return {**row, "error": f"{type(e).__name__}: {e}"[:200]}
     if r.get("error"):
         return {**row, "error": str(r["error"])[:200]}
     return {**row, "model": r.get("model"), "source_domains": r.get("source_domains") or [],
             "leads_with_list": bool(r.get("leads_with_list")), "has_table": bool(r.get("has_table")),
-            "opening_word_count": r.get("opening_word_count") or 0}
+            "opening_word_count": r.get("opening_word_count") or 0, "brands": r.get("brands") or []}
 
 
-def run_month(keywords_path: str, out_dir: str, engines=dfs.ENGINES, workers: int = 8) -> str:
-    """Ask every keyword of every engine and write <out_dir>/<YYYY-MM>.json
-    and latest.json. Refuses to start below MIN_BALANCE_USD. Returns the path."""
+def run_month(keywords_paths, out_dir: str, engines=dfs.ENGINES, workers: int = 8) -> str:
+    """Ask every keyword of every set that has started of every engine, and
+    write <out_dir>/<YYYY-MM>.json and latest.json. Refuses to start below
+    MIN_BALANCE_USD. Returns the path."""
+    if isinstance(keywords_paths, str):
+        keywords_paths = [keywords_paths]
     if dfs.read_balance() < MIN_BALANCE_USD:
         raise SystemExit(f"provider balance under ${MIN_BALANCE_USD}, research run skipped")
-    keywords = load_keywords(keywords_path)
-    jobs = [(c, k, e) for c, k in keywords for e in engines]
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    sets = [s for s in map(read_set, keywords_paths) if not s["starts"] or s["starts"] <= month]
+    keywords = [(c, k, s["set"]) for s in sets for c, k in s["keywords"]]
+    jobs = [(c, k, e, s) for c, k, s in keywords for e in engines]
     with ThreadPoolExecutor(max_workers=workers) as pool:
         answers = list(pool.map(_measure, jobs))
     failed = [a for a in answers if a.get("error")]
@@ -65,7 +99,8 @@ def run_month(keywords_path: str, out_dir: str, engines=dfs.ENGINES, workers: in
         raise SystemExit("more than half the answers failed; not publishing this month over the last good one")
     now = datetime.now(timezone.utc)
     data = {"month": now.strftime("%Y-%m"), "generated_at": now.isoformat(timespec="seconds"),
-            "keywords": len(keywords), "engines": list(engines), "answers": answers}
+            "keywords": len(keywords), "sets": {s["set"]: len(s["keywords"]) for s in sets},
+            "engines": list(engines), "answers": answers}
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"{data['month']}.json")
     for target in (path, os.path.join(out_dir, "latest.json")):
@@ -115,8 +150,14 @@ def _answer_counts(rows: list[dict]) -> dict[str, int]:
     return counts
 
 
-def aggregate(data: dict) -> dict:
-    answers = data["answers"]
+def has_set(data: dict | None, set_name: str) -> bool:
+    return bool(data) and any(set_of(a) == set_name for a in data["answers"])
+
+
+def aggregate(data: dict, set_name: str = EVERYDAY) -> dict:
+    """One set's numbers. Sets are never mixed: adding the buyer questions must
+    not move the everyday set's month-on-month figures."""
+    answers = [a for a in data["answers"] if set_of(a) == set_name]
     engines = data["engines"]
     by_engine = {e: _stats([a for a in answers if a["engine"] == e]) for e in engines}
     categories = sorted({a["category"] for a in answers})
@@ -137,7 +178,8 @@ def aggregate(data: dict) -> dict:
     favourites = {e: {"domain": s["top_domains"][0]["domain"], "answers": s["top_domains"][0]["answers"],
                       "elsewhere": {o: counts[o].get(s["top_domains"][0]["domain"], 0) for o in engines if o != e}}
                   for e, s in by_engine.items() if s["top_domains"]}
-    return {"month": data["month"], "generated_at": data["generated_at"], "keywords": data["keywords"],
+    return {"month": data["month"], "generated_at": data["generated_at"],
+            "keywords": len({a["keyword"] for a in answers}), "set": set_name,
             "engines": engines, "overall": _stats(answers), "by_engine": by_engine,
             "by_category": by_category, "by_category_engine": by_category_engine,
             "agreement": agreement, "favourites": favourites,
@@ -236,20 +278,25 @@ def _findings(agg: dict, prev: dict | None = None) -> list[str]:
     return out
 
 
-def _questions(data: dict) -> dict[str, list[str]]:
-    """Every question in the dataset, by topic, in keyword-file order."""
+def _questions(data: dict, set_name: str | None = EVERYDAY) -> dict[str, list[str]]:
+    """Every question in one set (every set with None), by topic, in
+    keyword-file order."""
     out: dict[str, list[str]] = {}
     for a in data["answers"]:
+        if set_name is not None and set_of(a) != set_name:
+            continue
         qs = out.setdefault(a["category"], [])
         if a["keyword"] not in qs:
             qs.append(a["keyword"])
     return out
 
 
-def render(agg: dict, base_url: str, prev: dict | None = None, questions: dict | None = None) -> tuple[str, str, str]:
+def render(agg: dict, base_url: str, prev: dict | None = None, questions: dict | None = None,
+           buyers: dict | None = None) -> tuple[str, str, str]:
     """(title, body_html, head_extra) for the research page. `prev` is last
     month's aggregate when there is one (change markers); `questions` maps
-    topic -> keywords for the index of per-question pages."""
+    topic -> keywords for the index of per-question pages; `buyers` is the
+    buyer set's aggregate when this month has one, for a link to its page."""
     esc = html.escape
     month = _month_label(agg["month"])
     nxt = next_edition(agg["month"])
@@ -368,14 +415,16 @@ least one of the same sites: <strong>{n_agree} of {agg['keywords_compared']}</st
 <p class="rs-card-sub">Share of each engine's cited sites that are community sites, per topic. Darker is higher.</p>
 {heat}</section>
 
+{_buyers_teaser(buyers, base_url)}
+
 {_question_index(questions or {}, base_url)}
 
 <section class="rs-section rs-cta">
 <h2>How does your site do?</h2>
 <p>Run the same checks on your own domain from your AI agent: which questions cite you, in ChatGPT, Gemini and
 Perplexity, and what changed since last time.</p>
-<p class="rs-cta-btns"><a class="btn btn-primary" href="{base_url}/docs/">See the tools</a>
-<a class="btn btn-ghost" href="{base_url}/check">Try one keyword free</a></p></section>
+<p class="rs-cta-btns"><a class="btn btn-primary" href="{base_url}/check">Check your site free</a>
+<a class="btn btn-ghost" href="{base_url}/docs/">See the tools</a></p></section>
 
 <details class="rs-method"><summary>How this is measured</summary>
 <p>Each question is asked once per engine, in English, as from the United States. ChatGPT and Gemini are read the
@@ -414,7 +463,7 @@ def _question_index(questions: dict[str, list[str]], base_url: str) -> str:
     if not questions:
         return ""
     groups = "".join(
-        f"<details class='rs-topic'><summary>{html.escape(c.capitalize())} <span>{len(qs)}</span></summary><ul>"
+        f"<details class='rs-topic'><summary>{html.escape(c[:1].upper() + c[1:])} <span>{len(qs)}</span></summary><ul>"
         + "".join(f"<li><a href='{base_url}/research/{slug(q)}'>{html.escape(q)}</a></li>" for q in qs)
         + "</ul></details>" for c, qs in sorted(questions.items()))
     total = sum(len(q) for q in questions.values())
@@ -453,6 +502,8 @@ def render_question(data: dict, question_slug: str, base_url: str,
     month = _month_label(data["month"])
     rows = {a["engine"]: a for a in data["answers"] if a["keyword"] == kw}
     category = next(iter(rows.values()))["category"]
+    set_name = set_of(next(iter(rows.values())))
+    home = f"{base_url}/research/software" if set_name == BUYER else f"{base_url}/research"
     sites = {e: [] if r.get("error") else list(dict.fromkeys(_bare(d) for d in r["source_domains"]))
              for e, r in rows.items()}
     cited_by: dict[str, list[str]] = {}
@@ -502,9 +553,13 @@ def render_question(data: dict, question_slug: str, base_url: str,
                           + (f"<strong>dropped</strong> {esc(', '.join(gone[:4]))}" if gone else "") + "</p>")
             else:
                 change = f"<p class='rs-change'>Same sites as {since}.</p>"
+        brands = ""
+        if r and not r.get("error") and "brands" in r:
+            brands = ("<p class='rs-brands'><span>Brands named</span>"
+                      + (esc(", ".join(r["brands"][:8])) if r["brands"] else "none") + "</p>")
         cards += (f"<div class='rs-card'><h3>{dot(e)}{label(e)}</h3>"
                   f"<p class='rs-card-sub'>{count(e)}{' &middot; ' + ' &middot; '.join(facts) if facts else ''}</p>"
-                  f"{inner}{change}</div>")
+                  f"{inner}{brands}{change}</div>")
 
     overlap = ""
     if shared_all or shared_some:
@@ -514,12 +569,12 @@ def render_question(data: dict, question_slug: str, base_url: str,
                    f"<ul class='rs-chips'>{chips}</ul></section>")
 
     siblings = [a["keyword"] for a in data["answers"] if a["category"] == category and a["engine"] == eng[0]
-                and a["keyword"] != kw][:8]
+                and set_of(a) == set_name and a["keyword"] != kw][:8]
     more = "".join(f"<li><a href='{base_url}/research/{slug(q)}'>{esc(q)}</a></li>" for q in siblings)
     question_text = f"Which websites do AI answer engines cite for “{kw}”?"
 
     body = f"""<header class="rs-hero">
-<p class="rs-eyebrow"><a href="{base_url}/research">Vantage research</a> &middot; {esc(month)} &middot; {esc(category)}</p>
+<p class="rs-eyebrow"><a href="{home}">Vantage research</a> &middot; {esc(month)} &middot; {esc(category)}</p>
 <h1>What AI cites for &ldquo;{esc(kw)}&rdquo;</h1>
 <p class="rs-lede">{esc(summary)}</p>
 <p class="rs-badges"><span class="rs-badge">Updated monthly</span><span class="rs-badge">Next edition {esc(next_edition(data['month']))}</span></p>
@@ -532,7 +587,7 @@ def render_question(data: dict, question_slug: str, base_url: str,
 <p>Ask your AI agent to run Vantage's <code>check_prompt_coverage</code> for your domain and &ldquo;{esc(kw)}&rdquo;, on all
 three engines, and it will tell you whether you are cited, who is instead, and what changed since your last check.</p>
 <p class="rs-cta-btns"><a class="btn btn-primary" href="{base_url}/docs/">See the tools</a>
-<a class="btn btn-ghost" href="{base_url}/research">All results for {esc(month)}</a></p></section>
+<a class="btn btn-ghost" href="{home}">All results for {esc(month)}</a></p></section>
 <section class="rs-section"><h2>More {esc(category)} questions</h2><ul class="rs-more">{more}</ul></section>
 <p class="rs-note">Each engine was asked once, in English, as from the United States, on {esc(data['generated_at'][:10])}.
 Answers change from run to run, so read this as a snapshot. <a href="{base_url}/research/data.json">Download the data</a>.</p>"""
@@ -543,6 +598,175 @@ Answers change from run to run, so read this as a snapshot. <a href="{base_url}/
             f'<link rel="canonical" href="{base_url}/research/{question_slug}">\n'
             f'<script type="application/ld+json">{json.dumps(ld)}</script>')
     return f"What AI cites for “{kw}”, {month}", body, head
+
+
+_BRAND_SUFFIX_RE = re.compile(r"(crm|ai|app)$")
+
+
+def brand_key(name: str) -> str:
+    """One key for the spellings of one product: "HubSpot CRM" and "HubSpot",
+    "OtterlyAI" and "Otterly AI", "Zoho CRM" and "zoho crm". "Zoho Desk"
+    stays apart from Zoho CRM, as it is a different product."""
+    k = re.sub(r"[^a-z0-9]", "", name.lower())
+    short = _BRAND_SUFFIX_RE.sub("", k)
+    return short if len(short) >= 4 else k
+
+
+def _brand_board(rows: list[dict]) -> list[dict]:
+    """Brands by the number of answers naming them, once per answer, with
+    spellings merged by brand_key and shown in their most used form. Only
+    rows that carry brand data count."""
+    board: dict[str, dict] = {}
+    for r in rows:
+        if r.get("error") or "brands" not in r:
+            continue
+        for key, name in {brand_key(n): n for n in reversed(r["brands"])}.items():
+            b = board.setdefault(key, {"answers": 0, "by_engine": {}, "spellings": {}})
+            b["answers"] += 1
+            b["by_engine"][r["engine"]] = b["by_engine"].get(r["engine"], 0) + 1
+            b["spellings"][name] = b["spellings"].get(name, 0) + 1
+    for b in board.values():
+        b["brand"] = max(b.pop("spellings").items(), key=lambda kv: (kv[1], -len(kv[0]), kv[0]))[0]
+    return sorted(board.values(), key=lambda b: (-b["answers"], b["brand"].lower()))
+
+
+def _buyers_teaser(buyers: dict | None, base_url: str) -> str:
+    if not buyers:
+        return ""
+    return (f"<section class='rs-section rs-card rs-teaser'><p class='rs-eyebrow'>Also this month</p>"
+            f"<h2>What AI recommends to software buyers</h2><p>{buyers['keywords']} questions people ask "
+            f"before they buy software: which brands ChatGPT, Gemini and Perplexity recommend, and which "
+            f"sites they cite, category by category.</p><p class='rs-cta-btns'><a class='btn btn-primary' "
+            f"href='{base_url}/research/software'>See the software report</a></p></section>")
+
+
+def render_buyers(data: dict, base_url: str, prev_data: dict | None = None) -> tuple[str, str, str] | None:
+    """(title, body_html, head_extra) for /research/software, or None when this
+    month has no buyer set. Per category: the brands the three engines name
+    most, and the sites they cite most."""
+    if not has_set(data, BUYER):
+        return None
+    esc = html.escape
+    agg = aggregate(data, BUYER)
+    rows = [a for a in data["answers"] if set_of(a) == BUYER]
+    prev_rows = [a for a in prev_data["answers"] if set_of(a) == BUYER] if has_set(prev_data, BUYER) else None
+    month, nxt, eng = _month_label(agg["month"]), next_edition(agg["month"]), agg["engines"]
+    label = lambda e: ENGINE_LABELS.get(e, e)  # noqa: E731
+    dot = lambda e: f"<span class='rs-dot' style='--c:{ENGINE_COLORS.get(e, '#888')}'></span>"  # noqa: E731
+    questions = _questions(data, BUYER)
+
+    branded = [r for r in rows if not r.get("error") and "brands" in r]
+    per_engine = {e: [r for r in branded if r["engine"] == e] for e in eng}
+    avg = {e: round(sum(len(r["brands"]) for r in rs) / len(rs), 1) for e, rs in per_engine.items() if rs}
+    overall = _brand_board(rows)
+    top_brand = overall[0] if overall else None
+    top_site = agg["overall"]["top_domains"][0] if agg["overall"]["top_domains"] else None
+
+    tiles = [(f"{agg['overall']['answers']}", "AI answers measured", f"{agg['keywords']} questions, 3 engines"),
+             (" / ".join(f"{avg[e]:g}" for e in avg) or "-", "brands named per answer",
+              " / ".join(label(e) for e in avg) or "no brand data"),
+             (esc(top_brand["brand"]) if top_brand else "-", "named most", f"in {top_brand['answers']} answers"
+              if top_brand else ""),
+             (esc(top_site["domain"]) if top_site else "-", "cited most", f"in {top_site['answers']} answers"
+              if top_site else "")]
+    kpis = "".join(f"<div class='rs-kpi'><div class='rs-kpi-val{' text' if i >= 2 else ''}'>{v}</div>"
+                   f"<div class='rs-kpi-lbl'>{lbl}</div><div class='rs-kpi-sub'>{s}</div></div>"
+                   for i, (v, lbl, s) in enumerate(tiles))
+
+    agree, compared = 0, 0
+    cards = ""
+    for cat, qs in questions.items():
+        crows = [r for r in rows if r["category"] == cat]
+        board = _brand_board(crows)[:TOP_BRANDS]
+        firsts = [_brand_board([r for r in crows if r["engine"] == e]) for e in eng]
+        if all(firsts):
+            compared += 1
+            agree += len({brand_key(f[0]["brand"]) for f in firsts}) == 1
+        before = ({brand_key(b["brand"]) for b in _brand_board([p for p in prev_rows if p["category"] == cat])}
+                  if prev_rows is not None else None)
+        bmax = board[0]["answers"] if board else 1
+        items = "".join(
+            f"<li><span class='rs-site'><span class='rs-site-name' title='"
+            + esc(", ".join(f"{label(e)} {n}" for e, n in b["by_engine"].items()), quote=True) + "'>"
+            + esc(b["brand"]) + "</span>"
+            + ("<span class='rs-tag rs-tag-new'>new</span>" if before is not None and brand_key(b["brand"]) not in before
+               else "") + "</span>"
+            f"<span class='rs-bar-track'><span class='rs-bar' style='width:{b['answers'] / bmax * 100:.1f}%;"
+            f"--c:var(--primary)'></span></span><span class='rs-bar-val'>{b['answers']}</span></li>"
+            for b in board) or "<li class='rs-muted'>No brands named this month.</li>"
+        sites = ", ".join(esc(t["domain"]) for t in _stats(crows)["top_domains"][:4]) or "none"
+        n_branded = len([r for r in crows if not r.get("error") and "brands" in r])
+        cards += (f"<div class='rs-card'><h3>{esc(cat)}</h3><p class='rs-card-sub'>{len(qs)} "
+                  f"question{'' if len(qs) == 1 else 's'} &middot; {n_branded} answer{'' if n_branded == 1 else 's'}"
+                  f"</p><ol class='rs-sites'>{items}</ol>"
+                  f"<p class='rs-change'>Most cited sites: {sites}</p></div>")
+
+    findings = []
+    if len(avg) > 1:
+        most, least = max(avg, key=avg.get), min(avg, key=avg.get)
+        if avg[most] != avg[least]:
+            findings.append(f"<strong>{label(most)} names the most brands</strong>: {avg[most]:g} per answer, "
+                            f"against {avg[least]:g} on {label(least)}.")
+    if compared:
+        findings.append(f"<strong>All three engines named the same brand most often in {agree} of {compared} "
+                        f"categories.</strong>")
+    if top_brand:
+        findings.append(f"<strong>{esc(top_brand['brand'])} is the brand named most often</strong>, in "
+                        f"{top_brand['answers']} answers across all categories.")
+    findings.append(f"<strong>{agg['overall']['community_pct']:g}% of the sites cited are community sites</strong> "
+                    "such as Reddit, YouTube, G2 and Capterra.")
+    finding_items = "".join(f"<li>{f}</li>" for f in findings)
+    headline = (f"Across {agg['overall']['answers']} AI answers to {agg['keywords']} software buying questions in "
+                f"{month}, " + (f"{top_brand['brand']} was the brand named most often and " if top_brand else "")
+                + f"{agg['overall']['community_pct']:g}% of the sites cited were community sites.")
+
+    body = f"""<header class="rs-hero">
+<p class="rs-eyebrow"><a href="{base_url}/research">Vantage research</a> &middot; {esc(month)}</p>
+<h1>What AI recommends to software buyers</h1>
+<p class="rs-lede">Every month we ask ChatGPT, Gemini and Perplexity the same {agg['keywords']} questions people ask
+before they buy software, and record which brands the answers name and which sites they cite.</p>
+<p class="rs-badges"><span class="rs-badge">Updated monthly</span>{'' if prev_rows is not None else '<span class="rs-badge">First edition</span>'}<span class="rs-badge">Next edition {esc(nxt)}</span>
+<a class="rs-badge rs-badge-link" href="{base_url}/research/data.json">Download the data (JSON)</a></p>
+</header>
+<section class="rs-kpis" aria-label="Headline numbers">{kpis}</section>
+<section class="rs-section"><h2>What stood out</h2><ul class="rs-findings">{finding_items}</ul></section>
+<section class="rs-section"><h2>The brands AI names, by category</h2>
+<p class="rs-card-sub">Each brand is counted once per answer that names it, across all three engines. Hover a
+brand for the split by engine.{' A <strong>new</strong> tag marks a brand not named last month.' if prev_rows is not None else ''}</p>
+<div class="rs-grid rs-grid-3">{cards}</div></section>
+{_question_index(questions, base_url)}
+<section class="rs-section rs-cta"><h2>Is your brand in the answer?</h2>
+<p>Check whether ChatGPT cites your site for the searches you already rank for, free. From your AI agent,
+Vantage checks any question on all three engines and tells you what to change on your page.</p>
+<p class="rs-cta-btns"><a class="btn btn-primary" href="{base_url}/check">Check your site free</a>
+<a class="btn btn-ghost" href="{base_url}/docs/">See the tools</a></p></section>
+<details class="rs-method"><summary>How this is measured</summary>
+<p>Each question is asked once per engine, in English, as from the United States. ChatGPT and Gemini are read the
+way a person sees them in those apps; Perplexity through its own sonar API with web search on. Brand names are read
+automatically from where an answer lists what it recommends: table rows, numbered headings and names in bold at
+the start of a list item. That reading is not checked by hand, so treat a single answer's list as approximate and
+the counts across many answers as the finding. A brand counts once per answer however often it is named, and
+spellings of one product are merged (HubSpot and HubSpot CRM). We keep measurements only, never the answer text. {agg['overall']['failed']} of {agg['overall']['answers'] + agg['overall']['failed']} requests failed and are
+left out. Measured on {esc(agg['generated_at'][:10])}; the same questions run again on {esc(nxt)}. The data is free
+to reuse under <a href="https://creativecommons.org/licenses/by/4.0/" rel="license">CC BY 4.0</a>, crediting
+Vantage.</p></details>"""
+
+    dataset = {
+        "@context": "https://schema.org", "@type": "Dataset",
+        "name": f"What AI recommends to software buyers, {month}", "description": headline,
+        "url": f"{base_url}/research/software", "temporalCoverage": agg["month"],
+        "dateModified": agg["generated_at"][:10],
+        "creator": {"@type": "Organization", "name": "Vantage", "url": base_url},
+        "license": "https://creativecommons.org/licenses/by/4.0/",
+        "distribution": [{"@type": "DataDownload", "encodingFormat": "application/json",
+                          "contentUrl": f"{base_url}/research/data.json"}],
+        "variableMeasured": ["brands named per answer", "brands named most, by category",
+                             "sites cited most, by category", "community share of cited sites"],
+    }
+    head = (f'<meta name="description" content="{esc(headline[:155], quote=True)}">\n'
+            f'<link rel="canonical" href="{base_url}/research/software">\n'
+            f'<script type="application/ld+json">{json.dumps(dataset)}</script>')
+    return f"What AI recommends to software buyers, {month}", body, head
 
 
 RESEARCH_CSS = """
@@ -644,6 +868,11 @@ main.check-main > .wrap { max-width: 1060px; }
   border-radius: 999px; padding: 0.35rem 0.8rem; color: var(--ink-2); font-size: 0.9rem; }
 .rs-chips li span { margin-left: 0.3rem; }
 .rs-muted { color: var(--muted); }
+.rs-brands { font-size: 0.85rem; color: var(--ink-2); border-top: 1px solid var(--line); padding-top: 0.6rem; margin: 0.8rem 0 0; }
+.rs-brands span { display: block; font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 0.2rem; }
+.rs-teaser { padding: 1.4rem 1.4rem 1.5rem; }
+.rs-teaser h2 { margin-top: 0; }
 @media (max-width: 640px) { .rs-topics { grid-template-columns: 1fr; } .rs-more { columns: 1; } }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @media (max-width: 860px) { .rs-kpis { grid-template-columns: repeat(2, 1fr); } .rs-grid-3 { grid-template-columns: 1fr; } }
@@ -655,4 +884,5 @@ main.check-main > .wrap { max-width: 1060px; }
 
 if __name__ == "__main__":
     import sys
-    print(run_month(sys.argv[1], sys.argv[2]))
+    # research.py <keyword file> [<keyword file> ...] <out dir>
+    print(run_month(sys.argv[1:-1], sys.argv[-1]))
