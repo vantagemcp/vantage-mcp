@@ -412,7 +412,7 @@ def _cited_majority(cited_runs: int, samples: int) -> bool:
     return cited_runs > 0 and cited_runs * 2 >= samples
 
 
-@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Check remaining monthly units", annotations=READ_ONLY_EXTERNAL)
 def get_usage() -> dict:
     """Check how much of this billing period's quota is left, before
     spending any of it. Use this to answer 'how many checks do I have left'
@@ -440,7 +440,7 @@ def get_usage() -> dict:
     return store.usage_status(token.client_id, tier)
 
 
-@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Find who AI cites for a question", annotations=READ_ONLY_EXTERNAL)
 def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: str | None = None,
                           country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE) -> dict:
     """Find which domains dominate AI-answer citations for a topic/keyword,
@@ -536,7 +536,7 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
     return result
 
 
-@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Track a site's AI citations over time", annotations=READ_ONLY_EXTERNAL)
 def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int = 6,
                            country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE) -> dict:
     """Track how a domain's AI-citation count has moved month over month,
@@ -632,7 +632,7 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
             "months": window, "trend": trend}
 
 
-@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Analyze a winning AI answer", annotations=READ_ONLY_EXTERNAL)
 def analyze_citation_structure(keyword: str, country: str = dfs.DEFAULT_COUNTRY,
                                language: str = dfs.DEFAULT_LANGUAGE, engine: str = "chat_gpt",
                                samples: int = 1) -> dict:
@@ -704,7 +704,7 @@ def analyze_citation_structure(keyword: str, country: str = dfs.DEFAULT_COUNTRY,
     return result
 
 
-@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Analyze winning AI answers in bulk", annotations=READ_ONLY_EXTERNAL)
 def analyze_citation_structure_batch(keywords: list[str], country: str = dfs.DEFAULT_COUNTRY,
                                      language: str = dfs.DEFAULT_LANGUAGE, engine: str = "chat_gpt") -> dict:
     """Analyze the structural shape of the winning AI answer across several
@@ -803,7 +803,7 @@ def analyze_citation_structure_batch(keywords: list[str], country: str = dfs.DEF
     return {"results": results, "summary": summary}
 
 
-@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Check if AI cites your site", annotations=READ_ONLY_EXTERNAL)
 def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = None,
                           country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE,
                           engine: str = "chat_gpt", samples: int = 1) -> dict:
@@ -995,7 +995,7 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
     }
 
 
-@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Compare your page with the cited answer", annotations=READ_ONLY_EXTERNAL)
 def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT_COUNTRY,
                          language: str = dfs.DEFAULT_LANGUAGE, engine: str = "chat_gpt") -> dict:
     """Compare your own page's structure against the AI-generated answer
@@ -1071,7 +1071,7 @@ def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT
     return result
 
 
-@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Find questions AI cites your site for", annotations=READ_ONLY_EXTERNAL)
 def find_cited_questions(domain: str, platform: str = "chat_gpt", limit: int = 20,
                          country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE) -> dict:
     """Find the questions people ask AI answer engines where a domain is
@@ -1136,7 +1136,7 @@ def find_cited_questions(domain: str, platform: str = "chat_gpt", limit: int = 2
     return result
 
 
-@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Show your past citation checks", annotations=READ_ONLY_EXTERNAL)
 def get_check_history(domain: str, keyword: str | None = None, limit: int = 50) -> dict:
     """Read back your own earlier check_prompt_coverage results for a domain,
     newest first, to show progress over time or to confirm whether a change
