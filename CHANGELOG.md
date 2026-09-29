@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] - 2026-09-29
+
+### Added
+- **A readable title on every tool** ("Check if AI cites your site", "Find who AI cites for a question", ...). Claude, Cursor and VS Code show the title to people instead of the function name. Tool names, arguments and costs are unchanged.
+- **One-click setup**: Add to Cursor and Add to VS Code buttons on vantagemcp.dev and in the docs, and the connector link for Claude. None carries a key; the first call signs in by email, or with an existing key.
+- **Free site check** at vantagemcp.dev/check: enter a website, and Vantage picks three of its buying questions and shows whether ChatGPT cites it for each, with the sites it cites instead. No account needed.
+- **Brand names per answer** in the monthly research, and a second question set on buying software, published from the November 2026 run at vantagemcp.dev/research/software.
+
 ## [1.8.1] - 2026-09-24
 
 ### Fixed
