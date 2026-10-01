@@ -1,0 +1,15 @@
+{
+  "name": "vantage-ai-visibility-mcp",
+  "version": "1.0.0",
+  "description": "AI visibility MCP server: checks whether ChatGPT, Gemini, Perplexity and Google AI Overviews cite your site. Connects any stdio MCP client to the hosted Vantage server.",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-visibility", "geo", "aeo", "chatgpt", "ai-search", "llm-visibility", "citations"],
+  "homepage": "https://vantagemcp.dev",
+  "repository": { "type": "git", "url": "git+https://github.com/vantagemcp/vantage-mcp.git", "directory": "npm" },
+  "bugs": { "email": "support@vantagemcp.dev" },
+  "author": "Vantage <support@vantagemcp.dev>",
+  "license": "MIT",
+  "bin": { "vantage-ai-visibility-mcp": "index.js" },
+  "files": ["index.js", "README.md"],
+  "engines": { "node": ">=18" },
+  "dependencies": { "mcp-remote": "^0.14.3" }
+}
