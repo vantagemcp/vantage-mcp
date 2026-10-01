@@ -188,8 +188,30 @@ _MD_MARKERS = [
 ]
 
 
+# A citation chip in an answer's markdown is a link whose visible text is only
+# the domain it points at, e.g. "([nhs.uk](https://www.nhs.uk/...))". That is
+# the answer citing a source, not saying anything, so chips are removed before
+# links become text. ChatGPT also sends them bare and back to back
+# ("options: [appvulture.com](...)[alternativeto.net](...)"), which used to
+# reach openings and outlines as "appvulture.comalternativeto.net" (2026-10-01).
+# The link text must match the URL's host, so "[Node.js](https://nodejs.org)"
+# stays a word.
+_CHIP = r"\[\s*[\w.-]+\.[a-z]{2,}\s*\]\([^)\s]*\)"
+_CHIP_PARTS_RE = re.compile(r"\[\s*([\w.-]+\.[a-z]{2,})\s*\]\(([^)\s]*)\)", re.IGNORECASE)
+_CHIP_RUN_RE = re.compile(rf"\(\s*(?:{_CHIP}\s*)+\)|(?:{_CHIP}[ \t]*)+", re.IGNORECASE)
+
+
+def _drop_chip_run(m: re.Match) -> str:
+    for chip in _CHIP_PARTS_RE.finditer(m.group(0)):
+        text = chip.group(1).lower().removeprefix("www.")
+        host = (urllib.parse.urlsplit(chip.group(2)).hostname or "").lower()
+        if host != text and not host.endswith("." + text):
+            return m.group(0)
+    return " "
+
+
 def strip_markdown(text: str) -> str:
-    out = text or ""
+    out = _CHIP_RUN_RE.sub(_drop_chip_run, text or "")
     for pattern, repl in _MD_MARKERS:
         out = pattern.sub(repl, out)
     return " ".join(out.split())
@@ -219,19 +241,13 @@ def _parse_opening(markdown: str) -> dict:
     }
 
 
-# A citation chip in the answer's markdown is a link whose visible text is only
-# a domain, e.g. "([nhs.uk](https://www.nhs.uk/...))". That is the answer citing
-# a source, not naming one, so chips are removed before looking for a mention.
-_CITATION_CHIP_RE = re.compile(r"\[\s*[\w.-]+\.[a-z]{2,}\s*\]\([^)]*\)", re.IGNORECASE)
-
-
 def mentions_any(markdown: str, terms: list[str]) -> bool:
     """True if the answer's own text names any of `terms` (whole word, case
-    insensitive), ignoring domain-only citation links. "Named" is a different
-    claim from "cited": an answer can recommend a product without linking it,
-    and can link a page it never names. Terms under 3 characters are skipped,
-    since they match inside ordinary words."""
-    text = strip_markdown(_CITATION_CHIP_RE.sub("", markdown or ""))
+    insensitive), ignoring domain-only citation links (strip_markdown drops
+    them). "Named" is a different claim from "cited": an answer can recommend
+    a product without linking it, and can link a page it never names. Terms
+    under 3 characters are skipped, since they match inside ordinary words."""
+    text = strip_markdown(markdown)
     for term in terms:
         term = (term or "").strip()
         if len(term) < 3:
@@ -277,7 +293,8 @@ def _drop_restated_heading(markdown: str, keyword: str) -> str:
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 _TOP_LIST_ITEM_RE = re.compile(r"^(?:[-*]|\d+\.)\s+(.+)$", re.MULTILINE)
 _NUMBERING_RE = re.compile(r"^(?:step\s+)?\d+[.):]\s*", re.IGNORECASE)
-_BOLD_LEAD_RE = re.compile(r"^\*\*(.+?)\*\*")
+# An emoji may come before the bold head ("😌 **Stress relief:** Oak or ...").
+_BOLD_LEAD_RE = re.compile(r"^[^\w*]*\*\*(.+?)\*\*")
 # A markdown table's separator row ("--- | ---", "|:---|---:|"). The provider
 # also collapses a page's separator to a single "|---|" whatever the column
 # count (2026-10-01), so one pipe-bounded cell counts too; a bare "---" is a
@@ -703,7 +720,7 @@ _SENTENCE_END_RE = re.compile(r"[.!?:]$")
 _CHROME_MAX_WORDS = 5
 # A related-article card: the provider writes it as a heading followed by a link
 # with the same text. Mid-page cards were reported as the page's own sections
-# ("How to stop worrying" in an article about Calm alternatives, 2026-10-01).
+# (links to other articles listed as an article's headings, 2026-10-01).
 _CARD_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*\n\s*\[\1\]\([^)]*\)", re.MULTILINE)
 
 
