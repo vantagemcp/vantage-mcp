@@ -171,6 +171,7 @@ def citation_trend(domain: str, platform: str = "chat_gpt",
 
 
 _LIST_RE = re.compile(r"^\s*(?:[-*]|\d+\.)\s+", re.MULTILINE)
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$", re.MULTILINE)
 
 # Markdown markers, removed before anything is counted or shown. DataForSEO
 # returns the answer as markdown, so an opening arrives as
@@ -198,9 +199,11 @@ def _parse_opening(markdown: str) -> dict:
     """Shared structural read of a markdown document's opening, used
     both for the AI-cited winning answer (citation_structure) and for
     a caller's own page (page_structure), so the two are computed the
-    exact same way and stay directly comparable."""
-    list_match = _LIST_RE.search(markdown)
-    cutoff = list_match.start() if list_match else len(markdown)
+    exact same way and stay directly comparable. A list or a table ends the
+    opening: a page that leads with a comparison table was reported as a
+    176-word opening made of its table cells (2026-10-01)."""
+    starts = [m.start() for m in (_LIST_RE.search(markdown), _TABLE_ROW_RE.search(markdown)) if m]
+    cutoff = min(starts) if starts else len(markdown)
     para_end = markdown.find("\n\n")
     if para_end != -1 and para_end < cutoff:
         cutoff = para_end
@@ -275,8 +278,12 @@ _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 _TOP_LIST_ITEM_RE = re.compile(r"^(?:[-*]|\d+\.)\s+(.+)$", re.MULTILINE)
 _NUMBERING_RE = re.compile(r"^(?:step\s+)?\d+[.):]\s*", re.IGNORECASE)
 _BOLD_LEAD_RE = re.compile(r"^\*\*(.+?)\*\*")
-# A markdown table's separator row ("--- | ---", "|:---|---:|").
-_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$", re.MULTILINE)
+# A markdown table's separator row ("--- | ---", "|:---|---:|"). The provider
+# also collapses a page's separator to a single "|---|" whatever the column
+# count (2026-10-01), so one pipe-bounded cell counts too; a bare "---" is a
+# horizontal rule, not a table.
+_TABLE_SEP_RE = re.compile(
+    r"^\s*(?:\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?|\|\s*:?-{3,}:?\s*\|)\s*$", re.MULTILINE)
 _OUTLINE_MAX = 12
 _OUTLINE_ITEM_WORDS = 12
 
@@ -694,13 +701,19 @@ def ranked_keywords(domain: str, limit: int = 30, max_position: int = 10,
 _LINK_OR_IMAGE_RE = re.compile(r"!?\[[^\]]*\]\([^)]*\)")
 _SENTENCE_END_RE = re.compile(r"[.!?:]$")
 _CHROME_MAX_WORDS = 5
+# A related-article card: the provider writes it as a heading followed by a link
+# with the same text. Mid-page cards were reported as the page's own sections
+# ("How to stop worrying" in an article about Calm alternatives, 2026-10-01).
+_CARD_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*\n\s*\[\1\]\([^)]*\)", re.MULTILINE)
 
 
 def _page_body(markdown: str) -> str:
-    """The page's markdown from its first line of real content onward, with a
-    blank line forced before every heading so a paragraph that runs straight
-    into the next heading still ends there. Falls back to the whole markdown
-    if every line looks like chrome, rather than measuring nothing."""
+    """The page's markdown from its first line of real content onward, with
+    related-article cards removed and a blank line forced before every heading
+    so a paragraph that runs straight into the next heading still ends there.
+    Falls back to the whole markdown if every line looks like chrome, rather
+    than measuring nothing."""
+    markdown = _CARD_RE.sub("", markdown)
     lines = markdown.split("\n")
     for i, raw in enumerate(lines):
         line = raw.strip()
