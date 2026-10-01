@@ -387,17 +387,19 @@ def record_check(client_id: str, domain: str, keyword: str, engine: str, country
                  language: str, samples: int, cited_runs: int, best_rank: int | None,
                  mentioned_runs: int) -> dict | None:
     """Save one keyword's coverage result and return the previous result for
-    the same key, domain, keyword, engine and market (or None on a first
-    check). Also drops this key's rows past CHECK_RETENTION_DAYS, so the
+    the same key, domain, keyword, engine, market and number of samples (or
+    None on a first check). Samples must match: a 1-sample miss after a 3-sample
+    2-of-3 hit was reported as "no longer cited" (2026-10-01), which is one
+    noisy answer, not a change. Also drops this key's rows past CHECK_RETENTION_DAYS, so the
     retention the privacy page promises is enforced by the write path itself."""
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(days=CHECK_RETENTION_DAYS)).isoformat()
     with closing(_connect()) as conn:
         row = conn.execute(
             f"SELECT {', '.join(_CHECK_COLS)} FROM checks WHERE client_id = ? AND domain = ? AND "
-            "keyword = ? AND engine = ? AND country = ? AND language = ? "
+            "keyword = ? AND engine = ? AND country = ? AND language = ? AND samples = ? "
             "ORDER BY checked_at DESC LIMIT 1",
-            (client_id, domain, keyword, engine, country, language),
+            (client_id, domain, keyword, engine, country, language, samples),
         ).fetchone()
         conn.execute("DELETE FROM checks WHERE client_id = ? AND checked_at < ?", (client_id, cutoff))
         conn.execute(

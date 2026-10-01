@@ -399,8 +399,8 @@ def _source_frequency(runs: list[dict]) -> list[dict]:
 
 def _change(previous: dict | None, cited_runs: int, samples: int) -> str:
     """This check against the last one for the same key, domain, keyword,
-    engine and market, compared as a citation rate so a 1-sample check and a
-    3-sample check are comparable."""
+    engine, market and number of samples (store.record_check), compared as a
+    citation rate."""
     if previous is None:
         return "first_check"
     before = previous["cited_runs"] / max(previous["samples"], 1)
@@ -844,7 +844,7 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
     samples, whether or not it links to it), "model", "checked_at",
     "previous" ({"checked_at", "cited_runs", "samples", "best_rank"} from
     your last check of this domain and keyword on the same engine and
-    market, or null), "change" ("first_check", "up", "down" or "same",
+    market with the same number of samples, or null), "change" ("first_check", "up", "down" or "same",
     comparing citation rates)}, or {"keyword", "error"} for one that
     failed), "keywords_mentioned" (int), "mentioned_not_cited" (keywords
     where the answer names you but does not cite you - the model already
