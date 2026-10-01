@@ -31,6 +31,20 @@ If your client supports MCP sign-in (OAuth), add `https://vantagemcp.dev/mcp` wi
 }
 ```
 
+If your client only starts servers as a local command, use the npm package [`vantage-ai-visibility-mcp`](https://www.npmjs.com/package/vantage-ai-visibility-mcp), which connects to the same hosted server:
+
+```json
+{
+  "mcpServers": {
+    "vantage": {
+      "command": "npx",
+      "args": ["-y", "vantage-ai-visibility-mcp"],
+      "env": { "VANTAGE_API_KEY": "YOUR_API_KEY" }
+    }
+  }
+}
+```
+
 Try it first with no account at all at [vantagemcp.dev/check](https://vantagemcp.dev/check), or get a free API key (30 quota units a month, no card required) at [vantagemcp.dev](https://vantagemcp.dev).
 
 ## Tools
