@@ -135,6 +135,10 @@ python -m vantage_mcp.server --http
 
 Requires a [DataForSEO](https://dataforseo.com/) account for the underlying SERP/AI-answer data.
 
+## Star it
+
+Useful? A star on GitHub helps others find it.
+
 ## License
 
 MIT
