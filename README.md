@@ -137,7 +137,7 @@ Requires a [DataForSEO](https://dataforseo.com/) account for the underlying SERP
 
 ## Star it
 
-Useful? A star on GitHub helps others find it.
+Useful? A star on GitHub helps others find it. Already starred? Tell us what brought you here: [support@vantagemcp.dev](mailto:support@vantagemcp.dev?subject=What%20brought%20me%20to%20Vantage).
 
 ## License
 
