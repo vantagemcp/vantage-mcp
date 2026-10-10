@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -68,7 +69,16 @@ def _auth_header() -> str:
     return "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
 
 
+# After one call times out, the provider is hung, not slow: refuse further calls
+# for this long so a caller waits 130s once, not once per keyword (a 10-keyword
+# batch used to stack to 21 minutes). Only a timeout trips it, never a 4xx/5xx.
+_FAIL_FAST_S = 60
+_breaker = {"until": 0.0}
+
+
 def _call(path: str, payload: list, timeout: int = 130) -> dict:
+    if time.monotonic() < _breaker["until"]:
+        raise DataForSEOError("provider timed out a moment ago, not retrying yet")
     req = urllib.request.Request(
         f"{API}/{path}",
         data=json.dumps(payload).encode(),
@@ -81,6 +91,8 @@ def _call(path: str, payload: list, timeout: int = 130) -> dict:
     except urllib.error.HTTPError as e:
         raise DataForSEOError(f"HTTP {e.code}: {e.read().decode()[:300]}") from e
     except Exception as e:  # noqa: BLE001 - surface as one error type to callers
+        if "timed out" in str(e):
+            _breaker["until"] = time.monotonic() + _FAIL_FAST_S
         raise DataForSEOError(str(e)) from e
 
 
