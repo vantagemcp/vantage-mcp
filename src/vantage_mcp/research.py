@@ -772,12 +772,12 @@ Vantage.</p></details>"""
 RESEARCH_CSS = """
 main.check-main > .wrap { max-width: 1060px; }
 .rs-hero { padding: 1rem 0 2rem; }
-.rs-eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.14em; text-transform: uppercase;
+.rs-eyebrow { font-family: var(--font-mono); font-size: 0.8rem; letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--primary); margin: 0 0 0.9rem; }
 .check-main .rs-hero h1 { font-size: clamp(2.2rem, 4.5vw + 1rem, 3.6rem); line-height: 1.04; letter-spacing: -0.02em; margin: 0 0 1rem; }
 .rs-lede { font-size: 1.15rem; line-height: 1.6; color: var(--ink-2); max-width: 44rem; margin: 0 0 1.4rem; }
 .rs-badges { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0; }
-.rs-badge { font-family: var(--font-mono); font-size: 0.78rem; padding: 0.35rem 0.7rem; border-radius: 999px;
+.rs-badge { font-family: var(--font-mono); font-size: 0.8rem; padding: 0.35rem 0.7rem; border-radius: 999px;
   border: 1px solid var(--line); color: var(--muted); background: var(--surface); }
 .rs-badge-link { color: var(--primary); text-decoration: none; border-color: color-mix(in oklch, var(--primary) 45%, transparent); }
 .rs-badge-link:hover, .rs-badge-link:focus-visible { background: var(--primary-tint); }
@@ -787,7 +787,7 @@ main.check-main > .wrap { max-width: 1060px; }
 .rs-kpi-val { font-size: clamp(1.6rem, 2.4vw + 0.6rem, 2.5rem); font-weight: 600; letter-spacing: -0.02em;
   color: var(--ink); line-height: 1.1; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .rs-kpi-lbl { color: var(--ink-2); margin-top: 0.45rem; line-height: 1.35; }
-.rs-kpi-sub { color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; }
+.rs-kpi-sub { color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem; }
 .rs-section { margin: 0 0 3.2rem; }
 .check-main .rs-section h2 { font-size: clamp(1.4rem, 1.6vw + 1rem, 1.9rem); margin: 0 0 0.9rem; }
 .rs-findings { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.9rem; }
@@ -813,12 +813,12 @@ main.check-main > .wrap { max-width: 1060px; }
 .rs-site { font-size: 0.92rem; color: var(--ink-2); line-height: 1.3; display: flex; align-items: center;
   gap: 0.4rem; min-width: 0; }
 .rs-site-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rs-tag { flex: none; font-size: 0.68rem; color: var(--muted); border: 1px solid var(--line);
+.rs-tag { flex: none; font-size: 0.8rem; color: var(--muted); border: 1px solid var(--line);
   border-radius: 999px; padding: 0.05rem 0.45rem; white-space: nowrap; }
 .rs-kpi-val.text { font-size: clamp(1.25rem, 1.4vw + 0.6rem, 1.7rem); padding-top: 0.35rem; }
 .rs-legend { display: flex; flex-wrap: wrap; gap: 1.1rem; margin: 0 0 1rem; color: var(--ink-2); font-size: 0.92rem; }
 .rs-legend-item { display: inline-flex; align-items: center; gap: 0.45rem; }
-.rs-note { color: var(--muted); font-size: 0.85rem; margin: 0.8rem 0 0; }
+.rs-note { color: var(--muted); font-size: 0.9rem; margin: 0.8rem 0 0; }
 .rs-dots { display: flex; flex-wrap: wrap; gap: 6px; padding: 1.2rem; background: var(--surface);
   border: 1px solid var(--line); border-radius: 12px; margin: 1rem 0; }
 .rs-q { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--line-strong); display: inline-block;
@@ -841,8 +841,8 @@ main.check-main > .wrap { max-width: 1060px; }
 .rs-method { border-top: 1px solid var(--line); padding: 1.2rem 0 0; margin: 0 0 1rem; color: var(--muted); }
 .rs-method summary { cursor: pointer; color: var(--ink-2); font-weight: 500; }
 .rs-method p { margin-top: 0.8rem; line-height: 1.65; }
-.rs-delta { display: block; margin-top: 0.35rem; font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted); }
-.rs-bar-val .rs-delta { margin-top: 0.1rem; font-size: 0.66rem; white-space: nowrap; }
+.rs-delta { display: block; margin-top: 0.35rem; font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); }
+.rs-bar-val .rs-delta { margin-top: 0.1rem; font-size: 0.8rem; white-space: nowrap; }
 .rs-tag-new { color: var(--primary); border-color: color-mix(in oklch, var(--primary) 45%, transparent); }
 .rs-eyebrow a { color: inherit; text-decoration: none; }
 .rs-eyebrow a:hover, .rs-eyebrow a:focus-visible { text-decoration: underline; }
@@ -861,15 +861,15 @@ main.check-main > .wrap { max-width: 1060px; }
 .rs-qsites .rs-tag { margin-left: 0.35rem; }
 .rs-also { display: inline-flex; gap: 3px; margin-left: 0.45rem; vertical-align: middle; }
 .rs-also .rs-dot { width: 0.55rem; height: 0.55rem; }
-.rs-change { font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 0.6rem; margin: 0.8rem 0 0; }
+.rs-change { font-size: 0.9rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 0.6rem; margin: 0.8rem 0 0; }
 .rs-change strong { color: var(--ink-2); font-weight: 600; }
 .rs-chips { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .rs-chips li { display: inline-flex; align-items: center; gap: 0.3rem; background: var(--surface); border: 1px solid var(--line);
   border-radius: 999px; padding: 0.35rem 0.8rem; color: var(--ink-2); font-size: 0.9rem; }
 .rs-chips li span { margin-left: 0.3rem; }
 .rs-muted { color: var(--muted); }
-.rs-brands { font-size: 0.85rem; color: var(--ink-2); border-top: 1px solid var(--line); padding-top: 0.6rem; margin: 0.8rem 0 0; }
-.rs-brands span { display: block; font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.08em;
+.rs-brands { font-size: 0.9rem; color: var(--ink-2); border-top: 1px solid var(--line); padding-top: 0.6rem; margin: 0.8rem 0 0; }
+.rs-brands span { display: block; font-family: var(--font-mono); font-size: 0.8rem; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--muted); margin-bottom: 0.2rem; }
 .rs-teaser { padding: 1.4rem 1.4rem 1.5rem; }
 .rs-teaser h2 { margin-top: 0; }
