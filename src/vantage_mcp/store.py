@@ -10,6 +10,7 @@ swap this module's internals, keep the same three functions' contracts.
 import hashlib
 import secrets
 import sqlite3
+import time
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -99,6 +100,10 @@ def _connect() -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_checks_lookup ON checks(client_id, domain, keyword, checked_at)"
     )
+    # "Email me a new key" requests, kept one hour to rate-limit them. `who`
+    # is a salted hash, never an address or an IP.
+    conn.execute("CREATE TABLE IF NOT EXISTS key_requests (ts REAL NOT NULL, who TEXT NOT NULL)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_key_requests_who ON key_requests(who, ts)")
     return conn
 
 
@@ -224,6 +229,55 @@ def add_key_for_client(client_id: str) -> str | None:
         )
         conn.commit()
     return plaintext
+
+
+# ---- "Email me a new key" (1.9.1) ----
+# An email alone never signs in to an existing account (auth.py), and a key is
+# shown once. Someone who lost theirs, or whose client missed the hand-back,
+# can have a NEW key emailed to the address on file. It is added, never swapped
+# in, so typing someone's address can only put a key in their own inbox.
+
+KEY_REQUEST_WINDOW_S = 3600
+KEY_REQUESTS_PER_EMAIL = 3
+KEY_REQUESTS_PER_IP = 10
+KEYS_PER_ACCOUNT_CAP = 20
+_RATE_SALT = secrets.token_hex(16)  # per process: these rows only matter for an hour
+
+
+def _rate_id(kind: str, value: str) -> str:
+    return kind + ":" + hashlib.sha256((_RATE_SALT + value.strip().lower()).encode()).hexdigest()[:20]
+
+
+def client_id_for_email(email: str) -> str | None:
+    """The account that signed up with this address, or None. Read only."""
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT client_id FROM api_keys WHERE email IS NOT NULL AND lower(email) = lower(?) LIMIT 1",
+            (email.strip(),),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def keys_for_client(client_id: str) -> int:
+    with closing(_connect()) as conn:
+        return conn.execute("SELECT COUNT(*) FROM api_keys WHERE client_id = ?", (client_id,)).fetchone()[0]
+
+
+def key_request_allowed(email: str, ip: str, now: float | None = None) -> bool:
+    """Count first, record only when allowed, so a refused request never
+    lengthens its own lockout. Per address and per visitor."""
+    now = time.time() if now is None else now
+    who_email, who_ip = _rate_id("e", email), _rate_id("i", ip or "unknown")
+    with closing(_connect()) as conn:
+        conn.execute("DELETE FROM key_requests WHERE ts < ?", (now - KEY_REQUEST_WINDOW_S,))
+        n_email = conn.execute("SELECT COUNT(*) FROM key_requests WHERE who = ?", (who_email,)).fetchone()[0]
+        n_ip = conn.execute("SELECT COUNT(*) FROM key_requests WHERE who = ?", (who_ip,)).fetchone()[0]
+        if n_email >= KEY_REQUESTS_PER_EMAIL or n_ip >= KEY_REQUESTS_PER_IP:
+            conn.commit()
+            return False
+        conn.executemany("INSERT INTO key_requests (ts, who) VALUES (?, ?)", [(now, who_email), (now, who_ip)])
+        conn.commit()
+    return True
 
 
 # ---- OAuth sign-in storage (1.8.0) ----

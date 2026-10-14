@@ -10,6 +10,7 @@ where API-key auth + usage metering actually apply):
     python -m vantage_mcp.server --http
 """
 
+import asyncio
 import html
 import json
 import re
@@ -26,7 +27,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 from vantage_mcp import dataforseo_client as dfs
-from vantage_mcp import store
+from vantage_mcp import mailer, store
 from vantage_mcp.auth import SCOPE as OAUTH_SCOPE
 from vantage_mcp.auth import VantageOAuthProvider, complete_consent, deny_consent, tier_from_scopes
 
@@ -167,12 +168,21 @@ def _consent_html(body: str, status: int = 200):
                         headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"})
 
 
-def _consent_form(req: str, client_name: str, error: str = "") -> str:
+def _consent_form(req: str, client_name: str, error: str = "", notice: str = "", resend_email: str = "") -> str:
     esc = html.escape
+    # Shown only after an address that already has an account was refused: the
+    # key it was created with is shown once, and an email alone never signs in.
+    resend = f"""<form method="post">
+  <input type="hidden" name="req" value="{esc(req)}">
+  <input type="hidden" name="email" value="{esc(resend_email)}">
+  <button class="ghost" type="submit" name="action" value="resend">Email me a new key</button>
+</form>""" if resend_email else ""
     return f"""<h1>Connect {esc(client_name)} to Vantage</h1>
 <p>{esc(client_name)} is asking to run Vantage's AI-citation checks for you. It will use your
 Vantage allowance (30 free units a month on the free plan).</p>
 {f'<p class="err" role="alert">{esc(error)}</p>' if error else ''}
+{f'<p role="status">{esc(notice)}</p>' if notice else ''}
+{resend}
 <form method="post">
   <input type="hidden" name="req" value="{esc(req)}">
   <label for="email">New to Vantage? Your email</label>
@@ -225,19 +235,60 @@ async def oauth_consent(request):
     email = str(form.get("email") or "").strip()
     if not EMAIL_RE.match(email):
         return _consent_html(_consent_form(req, client_name, "Enter a valid email address."), 400)
+    if action == "resend":
+        return await _resend_key(request, req, client_name, email)
     plaintext, account = store.create_api_key_for_email(email)
     if not plaintext:
         return _consent_html(_consent_form(
-            req, client_name, "That email already has a Vantage account. Sign in with its API key "
-            f"below, or email {SUPPORT_EMAIL} if you have lost it."), 400)
+            req, client_name,
+            "That email already has a Vantage account. Paste its API key below, or have a new key "
+            f"emailed to that address. If that does not work, email {SUPPORT_EMAIL}.",
+            resend_email=email), 400)
     _log_oauth("oauth_email_signup", account)
+    # A copy in the inbox is the way back in if the key is not saved or the
+    # client misses the hand-back. Never waited on: the page must not slow down.
+    _background(mailer.send_key_email(email, plaintext, "signup"))
     target = complete_consent(req, account) or BASE_URL
     esc = html.escape
     return _consent_html(f"""<h1>You're connected</h1>
 <p>Your free Vantage account is ready and {esc(client_name)} is connected. This is your account's
-API key for any other tool, shown once, so save it now:</p>
+API key for any other tool, shown once, so save it now. A copy is also on its way to {esc(email)}:</p>
 <code>{esc(plaintext)}</code>
-<a class="btn" href="{esc(target)}">Continue to {esc(client_name)}</a>""")
+<a class="btn" href="{esc(target)}">Continue to {esc(client_name)}</a>
+<p>{esc(client_name)} should show Vantage as connected within a few seconds. If it does not, go back to
+it and choose Authenticate again within a minute, then paste this key where it asks for one.</p>""")
+
+
+_BACKGROUND: set = set()
+
+
+def _background(coro) -> None:
+    """Run a best-effort job (an email) without making the page wait for it."""
+    task = asyncio.ensure_future(coro)
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
+
+
+async def _resend_key(request, req: str, client_name: str, email: str):
+    """Email a NEW key to the address on file. It is added, never swapped in,
+    so typing someone's address can only put a key in their own inbox, and the
+    answer is the same whether or not the address has an account."""
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
+        request.client.host if request.client else "")
+    page = _consent_html(_consent_form(
+        req, client_name,
+        notice="If that address has an account, a new key is on its way. Open the email, paste the key "
+               "below, then connect again."))
+    if not store.key_request_allowed(email, ip):
+        return page
+    account = store.client_id_for_email(email)
+    if not account or store.keys_for_client(account) >= store.KEYS_PER_ACCOUNT_CAP:
+        return page
+    plaintext = store.add_key_for_client(account)
+    if plaintext:
+        _log_oauth("oauth_key_resend", account)
+        _background(mailer.send_key_email(email, plaintext, "resend"))
+    return page
 
 
 def _log_oauth(event: str, client_id: str) -> None:

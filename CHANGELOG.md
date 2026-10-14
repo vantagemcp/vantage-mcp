@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.9.1] - 2026-10-14
+
+### Added
+- **A copy of your key by email when you connect an app.** Signing in from Cursor, VS Code or another MCP client creates a free account and shows its API key once. The same key is now also emailed to the address you gave, so it is not lost if the page is closed or the app does not finish connecting.
+- **"Email me a new key"** on the sign-in page, for an address that already has an account. It emails a new key to that address and revokes nothing, so your existing keys keep working. The answer is the same whether or not the address has an account, and requests are rate limited.
+
+### Changed
+- The "You're connected" page now says what to do if the app does not show Vantage as connected within a minute: go back to the app, choose Authenticate again, and paste the key.
+- An address that already has an account is still never signed in by email alone. The page now offers a way back in instead of only pointing to support.
+
 ## [1.9.0] - 2026-09-29
 
 ### Added
