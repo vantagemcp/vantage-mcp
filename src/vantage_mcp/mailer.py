@@ -33,17 +33,32 @@ def _body(api_key: str, reason: str) -> tuple[str, str]:
     steps = ("To connect an app: open its sign-in, choose \"Already have a Vantage API key?\" and paste "
              "this key. If you did not ask for this, you can ignore the email.")
     text = f"{intro}\n\n{api_key}\n\n{steps}\n\nVantage, {BASE_URL}\n"
-    page = f"""<!doctype html><html lang="en"><body style="margin:0; padding:32px 24px; background:#010403;">
+    # Light by default, dark through prefers-color-scheme: every colour is a class so a client that
+    # honours the media query switches cleanly, and one that ignores it still shows readable light.
+    page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="supported-color-schemes" content="light dark">
+<style>
+:root {{ color-scheme: light dark; supported-color-schemes: light dark; }}
+@media (prefers-color-scheme: dark) {{
+  .bg {{ background:#010403 !important; }}
+  .tx {{ color:#c9d4d1 !important; }}
+  .hd {{ color:#f8fdfc !important; }}
+  .key {{ background:#0b1512 !important; border-color:#1d2b27 !important; color:#ecf4f2 !important; }}
+  .mut {{ color:#7d8a86 !important; }}
+  .lk {{ color:#35d3b0 !important; }}
+}}
+</style></head><body class="bg" style="margin:0; padding:32px 24px; background:#ffffff;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
 <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="max-width:520px;">
-<tr><td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:15px; line-height:1.6; color:#c9d4d1;">
-<p style="margin:0 0 18px; color:#f8fdfc; font-size:20px; font-weight:600;">Your Vantage API key</p>
+<tr><td class="tx" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:15px; line-height:1.6; color:#33403c;">
+<p class="hd" style="margin:0 0 18px; color:#0b1512; font-size:20px; font-weight:600;">Your Vantage API key</p>
 <p style="margin:0 0 18px;">{html.escape(intro)}</p>
-<p style="margin:0 0 18px; padding:14px; background:#0b1512; border:1px solid #1d2b27; border-radius:8px;
- font-family:'SF Mono',Menlo,Consolas,monospace; font-size:14px; color:#ecf4f2; word-break:break-all;">
+<p class="key" style="margin:0 0 18px; padding:14px; background:#f1f5f4; border:1px solid #d3ddda; border-radius:8px;
+ font-family:'SF Mono',Menlo,Consolas,monospace; font-size:14px; color:#0b1512; word-break:break-all;">
 <code>{html.escape(api_key)}</code></p>
 <p style="margin:0 0 18px;">{html.escape(steps)}</p>
-<p style="margin:0; color:#7d8a86;">Vantage, <a href="{BASE_URL}" style="color:#35d3b0;">vantagemcp.dev</a></p>
+<p class="mut" style="margin:0; color:#5d6b67;">Vantage, <a class="lk" href="{BASE_URL}" style="color:#0f7a62;">vantagemcp.dev</a></p>
 </td></tr></table></td></tr></table></body></html>"""
     return text, page
 
