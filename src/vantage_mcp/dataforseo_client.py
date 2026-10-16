@@ -391,6 +391,17 @@ def _domains_from(sources: list[dict]) -> list[str]:
     return domains
 
 
+def _urls_from(sources: list[dict]) -> list[str]:
+    """Distinct cited page URLs in first-seen order (fragment dropped), so a
+    caller can tell WHICH page of a domain was cited, not just the domain."""
+    urls = []
+    for src in sources:
+        u = urllib.parse.urldefrag(src.get("url") or "")[0]
+        if u and u not in urls:
+            urls.append(u)
+    return urls
+
+
 MAX_BRANDS = 15
 
 # Brand names are read from where an answer puts the things it recommends: the
@@ -555,13 +566,14 @@ def fetch_answer(keyword: str, engine: str = "chat_gpt",
         sources = result.get("sources") or []
         model = result.get("model")
     domains = _domains_from(sources)
-    return {"markdown": markdown, "domains": domains, "brands": extract_brands(markdown, domains),
+    return {"markdown": markdown, "domains": domains, "urls": _urls_from(sources),
+            "brands": extract_brands(markdown, domains),
             "model": model, "checked_at": result.get("datetime")}
 
 
 def citation_structure(keyword: str, mention_terms: list[str] | None = None,
                        country: str = DEFAULT_COUNTRY, language: str = DEFAULT_LANGUAGE,
-                       engine: str = "chat_gpt", with_brands: bool = False) -> dict:
+                       engine: str = "chat_gpt", with_brands: bool = False, with_urls: bool = False) -> dict:
     """Structural shape of the AI-generated answer actually cited for
     this keyword: does it lead with a list, how long is the opening,
     how many sources does it cite, which domains. ~$0.004/call.
@@ -608,6 +620,7 @@ def citation_structure(keyword: str, mention_terms: list[str] | None = None,
             "num_sources_cited": len(domains[:10]),
             "source_domains": domains[:10],
             "source_mix": source_mix(domains[:10]),
+            **({"source_urls": answer.get("urls", [])[:30]} if with_urls else {}),
             **({"mentioned": mentions_any(markdown, mention_terms)} if mention_terms else {}),
             **({"brands": answer.get("brands") or []} if with_brands else {}),
         }
@@ -631,7 +644,7 @@ def sample_structures(keyword: str, samples: int, mention_terms: list[str] | Non
     def one(_):
         try:
             return citation_structure(keyword, mention_terms=mention_terms, country=country,
-                                      language=language, engine=engine)
+                                      language=language, engine=engine, with_urls=True)
         except DataForSEOError as e:
             return {"keyword": keyword, "error": str(e), "transient": True}
 

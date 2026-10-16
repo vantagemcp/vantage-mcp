@@ -8,6 +8,7 @@ swap this module's internals, keep the same three functions' contracts.
 """
 
 import hashlib
+import json
 import secrets
 import sqlite3
 import time
@@ -97,6 +98,10 @@ def _connect() -> sqlite3.Connection:
             checked_at TEXT NOT NULL
         )"""
     )
+    # cited_pages: JSON list of the checked domain's own page URLs that the
+    # answers cited (NULL on rows saved before page tracking existed).
+    if "cited_pages" not in {row[1] for row in conn.execute("PRAGMA table_info(checks)")}:
+        conn.execute("ALTER TABLE checks ADD COLUMN cited_pages TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_checks_lookup ON checks(client_id, domain, keyword, checked_at)"
     )
@@ -439,7 +444,7 @@ _CHECK_COLS = ("domain", "keyword", "engine", "country", "language", "samples", 
 
 def record_check(client_id: str, domain: str, keyword: str, engine: str, country: str,
                  language: str, samples: int, cited_runs: int, best_rank: int | None,
-                 mentioned_runs: int) -> dict | None:
+                 mentioned_runs: int, cited_pages: list[str] | None = None) -> dict | None:
     """Save one keyword's coverage result and return the previous result for
     the same key, domain, keyword, engine, market and number of samples (or
     None on a first check). Samples must match: a 1-sample miss after a 3-sample
@@ -457,9 +462,11 @@ def record_check(client_id: str, domain: str, keyword: str, engine: str, country
         ).fetchone()
         conn.execute("DELETE FROM checks WHERE client_id = ? AND checked_at < ?", (client_id, cutoff))
         conn.execute(
-            f"INSERT INTO checks (client_id, {', '.join(_CHECK_COLS)}) VALUES (?{', ?' * len(_CHECK_COLS)})",
+            f"INSERT INTO checks (client_id, {', '.join(_CHECK_COLS)}, cited_pages) "
+            f"VALUES (?{', ?' * (len(_CHECK_COLS) + 1)})",
             (client_id, domain, keyword, engine, country, language, samples, cited_runs,
-             best_rank, mentioned_runs, now.isoformat()),
+             best_rank, mentioned_runs, now.isoformat(),
+             None if cited_pages is None else json.dumps(cited_pages)),
         )
         conn.commit()
     return dict(zip(_CHECK_COLS, row)) if row else None
@@ -467,7 +474,7 @@ def record_check(client_id: str, domain: str, keyword: str, engine: str, country
 
 def check_history(client_id: str, domain: str, keyword: str | None = None, limit: int = 50) -> list[dict]:
     """This key's saved results for a domain, newest first."""
-    sql = f"SELECT {', '.join(_CHECK_COLS)} FROM checks WHERE client_id = ? AND domain = ?"
+    sql = f"SELECT {', '.join(_CHECK_COLS)}, cited_pages FROM checks WHERE client_id = ? AND domain = ?"
     args: list = [client_id, domain]
     if keyword:
         sql += " AND keyword = ?"
@@ -476,7 +483,7 @@ def check_history(client_id: str, domain: str, keyword: str | None = None, limit
     args.append(limit)
     with closing(_connect()) as conn:
         rows = conn.execute(sql, args).fetchall()
-    return [dict(zip(_CHECK_COLS, r)) for r in rows]
+    return [{**dict(zip(_CHECK_COLS, r)), "cited_pages": json.loads(r[-1]) if r[-1] else None} for r in rows]
 
 
 def recent_checks(client_id: str, limit: int = 25) -> list[dict]:

@@ -584,7 +584,7 @@ def render_question(data: dict, question_slug: str, base_url: str,
 <section class="rs-section"><div class="rs-grid rs-grid-3">{cards}</div></section>
 {overlap}
 <section class="rs-section rs-cta"><h2>Is your site one of them?</h2>
-<p>Ask your AI agent to run Vantage's <code>check_prompt_coverage</code> for your domain and &ldquo;{esc(kw)}&rdquo;, on all
+<p>Ask your AI agent to run Vantage's <code>analyze_citation_coverage</code> for your domain and &ldquo;{esc(kw)}&rdquo;, on all
 three engines, and it will tell you whether you are cited, who is instead, and what changed since your last check.</p>
 <p class="rs-cta-btns"><a class="btn btn-primary" href="{base_url}/docs/">See the tools</a>
 <a class="btn btn-ghost" href="{home}">All results for {esc(month)}</a></p></section>

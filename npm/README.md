@@ -34,6 +34,6 @@ Or with an API key:
 
 ## Tools
 
-`check_prompt_coverage`, `find_cited_questions`, `find_citation_leaders`, `analyze_citation_trend`, `analyze_citation_structure`, `analyze_citation_structure_batch`, `analyze_citation_gap`, `get_check_history`, `get_usage`. Full reference: [vantagemcp.dev/docs](https://vantagemcp.dev/docs/).
+`analyze_citation_coverage`, `find_cited_questions`, `find_citation_leaders`, `analyze_citation_trend`, `analyze_citation_structure`, `analyze_citation_structure_batch`, `analyze_citation_gap`, `get_check_history`, `get_usage`. Full reference: [vantagemcp.dev/docs](https://vantagemcp.dev/docs/).
 
 Source: [github.com/vantagemcp/vantage-mcp](https://github.com/vantagemcp/vantage-mcp). Not affiliated with vantage.sh.

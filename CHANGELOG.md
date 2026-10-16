@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] - 2026-10-17
+
+### Changed
+- **`check_prompt_coverage` is now `analyze_citation_coverage`**, so the analysis tools share one naming pattern. Arguments and results are unchanged. Update any saved prompt or config that names the old tool.
+
+### Added
+- **Follow one page over time.** `get_check_history` takes a `page` URL and marks each saved check with whether that page was cited. Each coverage result now lists `cited_pages` (your own pages that the answers cited), and `analyze_citation_structure` returns the exact `source_urls`. Only your own domain's page URLs are kept, for the same 180 days.
+- **Compare several competitors in one call.** `find_citation_leaders` takes `compare_domains` (up to 10 domains) and returns each one's rank. It costs the same single call.
+
 ## [1.9.1] - 2026-10-14
 
 ### Added

@@ -58,14 +58,14 @@ Costs 0 units - reads Vantage's own record, never calls the paid data provider.
 Starts from your domain instead of a keyword: the questions where AI answers already cite it, most asked first. 10 units.
 > "What does ChatGPT already cite us for?"
 
-### `check_prompt_coverage`
+### `analyze_citation_coverage`
 Which of several prompts actually cite a specific domain, and which don't - up to 10 keywords in one call. ChatGPT, Gemini or Perplexity (`engine`), 1 unit per keyword per sample. Pass `samples=3` to get "cited in 2 of 3 answers" instead of one yes or no. Each result is remembered for 180 days, so the next check reports what changed (`previous`, `change`, `newly_cited`).
 
 Cited and named are reported separately. An answer can name your brand without linking you (`mentioned_not_cited`: the model already knows you, it just isn't citing you) or link a page it never names. Pass `brand` (e.g. `"Notion"`) so the name check looks for your real brand instead of a guess from the domain.
 > "Out of everything we care about, where do we already show up?"
 
 ### `get_check_history`
-Your earlier `check_prompt_coverage` results for a domain, newest first. 0 units.
+Your earlier `analyze_citation_coverage` results for a domain, newest first. 0 units.
 > "Did our changes last week move anything?"
 
 ### `find_citation_leaders`

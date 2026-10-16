@@ -17,6 +17,7 @@ import re
 import sqlite3
 import sys
 import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -87,7 +88,7 @@ def _guard_mentions_market(platform: str, country: str, language: str) -> str | 
         return (
             'ChatGPT data for this check only exists for country "United States", language "en". '
             'Use platform "google" (Google\'s AI Overview) for other markets, or '
-            "check_prompt_coverage / analyze_citation_structure, which read a live ChatGPT "
+            "analyze_citation_coverage / analyze_citation_structure, which read a live ChatGPT "
             "answer in the market you choose."
         )
     return None
@@ -402,6 +403,14 @@ def _normalize_domain(domain: str) -> str:
     return (domain or "").strip().lower().removeprefix("www.")
 
 
+def _page_key(url: str) -> str:
+    """Comparison key for a page URL: no scheme, no "www.", no fragment, no
+    trailing slash, lowercase host. Path stays case-sensitive."""
+    parts = urllib.parse.urlsplit((url or "").strip() if "//" in (url or "") else "//" + (url or "").strip())
+    host = (parts.hostname or "").removeprefix("www.")
+    return host + parts.path.rstrip("/") + (f"?{parts.query}" if parts.query else "")
+
+
 def _refund_usage(cost: int) -> None:
     """Hand back quota _guard_usage already charged for a call that came
     back unusable (a provider error, or a response we could not parse).
@@ -475,7 +484,7 @@ def get_usage() -> dict:
     Returns: {"tier", "period" (YYYY-MM), "units_used", "units_limit",
     "units_remaining"}. find_citation_leaders and find_cited_questions cost
     10 units/call; analyze_citation_trend, analyze_citation_structure (and
-    its batch form, per keyword), check_prompt_coverage (per keyword) and
+    its batch form, per keyword), analyze_citation_coverage (per keyword) and
     analyze_citation_gap cost 1, times `samples` where a tool takes it.
     get_check_history costs 0.
 
@@ -493,11 +502,13 @@ def get_usage() -> dict:
 
 @mcp.tool(title="Find who AI cites for a question", annotations=READ_ONLY_EXTERNAL)
 def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: str | None = None,
-                          country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE) -> dict:
+                          country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE,
+                          compare_domains: list[str] | None = None) -> dict:
     """Find which domains dominate AI-answer citations for a topic/keyword,
-    and optionally check whether a specific domain shows up among them.
-    Use this to answer 'who's winning AI search for this topic' or
-    'is my competitor cited more than me for X'.
+    and optionally check where one domain, or several competitors at once,
+    show up among them. Use this to answer 'who's winning AI search for this
+    topic' or 'is my competitor cited more than me for X'. Comparing several
+    domains costs the same single call.
 
     Read-only: no side effects, safe to retry. Costs 10 quota units/call
     (free tier is 30 units/month shared across every metered tool, so up to 3
@@ -510,7 +521,9 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
     citations, only that it did not rank in the top `top_domains_limit`),
     "compare_domain_rank" (int|null, only present when compare_domain was
     passed: the domain's 1-based position in top_domains, or null if it
-    did not rank in the top `top_domains_limit`), "country", "language",
+    did not rank in the top `top_domains_limit`), "compare_domain_ranks"
+    (only present when compare_domains was passed: {domain: rank or null},
+    same rank rule as compare_domain_rank), "country", "language",
     "source_mix" ({"community_pct" (share of these mentions that go to
     community sites such as Reddit, YouTube, X, Quora), "community_domains",
     "other_domains"}: a high community_pct means this topic is won by what
@@ -521,7 +534,7 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
     analyze_citation_structure's single live answer - the two can
     legitimately disagree on whether a given domain shows up.
 
-    Use check_prompt_coverage instead if you already know which domain you
+    Use analyze_citation_coverage instead if you already know which domain you
     care about and just want to know whether it is cited.
 
     Args:
@@ -537,8 +550,13 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
             "google" for any other country.
         language: language code, e.g. "it". Defaults to "en" (the only
             option for chat_gpt).
+        compare_domains: optional list of up to 10 bare domains to rank side
+            by side, e.g. ["notion.so", "asana.com", "monday.com"]. Same
+            exact-match rule as compare_domain.
     """
     country, language = _market(country, language)
+    if compare_domains and len(compare_domains) > 10:
+        return {"error": f"Max 10 compare_domains per call, got {len(compare_domains)}."}
     if err := _guard_platform(platform) or _guard_mentions_market(platform, country, language):
         _log_call("find_citation_leaders", "invalid_platform")
         return {"error": err}
@@ -575,14 +593,16 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
                 "again, or contact support@vantagemcp.dev if it persists."
             ),
         }
+    ranked = [_normalize_domain(d.get("domain") or "") for d in result.get("top_domains", [])]
+
+    def rank_of(domain: str) -> int | None:
+        cd = _normalize_domain(domain)
+        return ranked.index(cd) + 1 if cd in ranked else None
+
     if compare_domain:
-        cd = _normalize_domain(compare_domain)
-        rank = next(
-            (i for i, d in enumerate(result.get("top_domains", []), start=1)
-             if _normalize_domain(d.get("domain") or "") == cd),
-            None,
-        )
-        result["compare_domain_rank"] = rank
+        result["compare_domain_rank"] = rank_of(compare_domain)
+    if compare_domains:
+        result["compare_domain_ranks"] = {d: rank_of(d) for d in compare_domains}
     _log_call("find_citation_leaders", "success")
     return result
 
@@ -705,7 +725,9 @@ def analyze_citation_structure(keyword: str, country: str = dfs.DEFAULT_COUNTRY,
     heads, in order: the answer's headings, or its top-level list items when it
     has fewer than two headings; heads only, never the text under them),
     "has_table" (bool), "num_sources_cited" (int),
-    "source_domains" (list of up to 10 domain strings), "source_mix"
+    "source_domains" (list of up to 10 domain strings), "source_urls" (the
+    exact cited page URLs, up to 30, so you can see which page of a domain was
+    cited), "source_mix"
     ({"community_pct" (share of those sources that are community sites such
     as Reddit, YouTube, X, Quora), "community_domains", "other_domains"}),
     "country", "language"}. With samples above 1 the shape fields describe
@@ -855,7 +877,7 @@ def analyze_citation_structure_batch(keywords: list[str], country: str = dfs.DEF
 
 
 @mcp.tool(title="Check if AI cites your site", annotations=READ_ONLY_EXTERNAL)
-def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = None,
+def analyze_citation_coverage(domain: str, keywords: list[str], brand: str | None = None,
                           country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE,
                           engine: str = "chat_gpt", samples: int = 1) -> dict:
     """Check which of several prompts/keywords actually cite a specific
@@ -886,7 +908,9 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
     cited in at least half of the samples), "cited_runs" (how many sampled
     answers cited it), "samples_ok" (how many answers came back), "rank"
     (int|null, best 1-based position among the answers' sources, null when
-    never cited), "num_sources_cited", "source_domains" (who IS cited, for a
+    never cited), "cited_pages" (list of your own page URLs the answers cited,
+    empty when none - saved with the check, so get_check_history can follow
+    one page over time), "num_sources_cited", "source_domains" (who IS cited, for a
     keyword you are not in), "source_mix" (how much of that is community
     sites such as Reddit, YouTube, X - where to get discussed to close the
     gap), "source_frequency" (only with samples above 1: {"domain", "runs"}
@@ -942,7 +966,7 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
             )
         }
     if err := _guard_balance():
-        _log_call("check_prompt_coverage", "balance_denied", keyword_count=len(keywords))
+        _log_call("analyze_citation_coverage", "balance_denied", keyword_count=len(keywords))
         return {"error": err}
 
     target = _normalize_domain(domain)
@@ -955,7 +979,7 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
     jobs = []
     for i, kw in enumerate(keywords):
         if err := _guard_usage(samples):
-            _log_call("check_prompt_coverage", "quota_denied", keyword=kw)
+            _log_call("analyze_citation_coverage", "quota_denied", keyword=kw)
             results[i] = {"keyword": kw, "error": err}
         else:
             jobs.append(i)
@@ -978,7 +1002,7 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
         if len(ok) < samples:
             _refund_usage(samples - len(ok))
         if not ok:
-            _log_call("check_prompt_coverage", "provider_error" if runs[0].get("transient") else "error",
+            _log_call("analyze_citation_coverage", "provider_error" if runs[0].get("transient") else "error",
                       keyword=kw)
             results[i] = {"keyword": kw, "error": _run_error(runs[0])}
             continue
@@ -988,6 +1012,10 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
         cited_runs = sum(1 for r in ranks if r is not None)
         best_rank = min((r for r in ranks if r is not None), default=None)
         mentioned_runs = sum(1 for r in ok if r.get("mentioned"))
+        # Only the checked domain's own pages are kept (never other sites' URLs).
+        cited_pages = list(dict.fromkeys(
+            u for r in ok for u in r.get("source_urls") or []
+            if _normalize_domain(urllib.parse.urlsplit(u).hostname or "") == target))
         first = ok[0]
         entry = {
             "keyword": kw,
@@ -995,6 +1023,7 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
             "cited_runs": cited_runs,
             "samples_ok": len(ok),
             "rank": best_rank,
+            "cited_pages": cited_pages,
             "num_sources_cited": first.get("num_sources_cited"),
             "source_domains": first.get("source_domains") or [],
             "source_mix": first.get("source_mix"),
@@ -1010,14 +1039,14 @@ def check_prompt_coverage(domain: str, keywords: list[str], brand: str | None = 
         if client_id:
             try:
                 prev = store.record_check(client_id, target, kw, engine, country, language,
-                                          len(ok), cited_runs, best_rank, mentioned_runs)
+                                          len(ok), cited_runs, best_rank, mentioned_runs, cited_pages)
             except sqlite3.Error:
                 prev, entry["change"] = None, "not_recorded"
             else:
                 entry["previous"] = prev and {k: prev[k] for k in
                                               ("checked_at", "cited_runs", "samples", "best_rank")}
                 entry["change"] = _change(prev, cited_runs, len(ok))
-        _log_call("check_prompt_coverage", "success", keyword=kw, engine=engine, samples=samples)
+        _log_call("analyze_citation_coverage", "success", keyword=kw, engine=engine, samples=samples)
         results[i] = entry
 
     checked = [r for r in results if "error" not in r]
@@ -1080,7 +1109,7 @@ def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT
 
     Use analyze_citation_structure instead if you just want the winning
     answer's shape, not a comparison against your own page. Use
-    check_prompt_coverage first if you have several keywords and do not yet
+    analyze_citation_coverage first if you have several keywords and do not yet
     know which ones you are missing from - this tool is for one keyword
     you already know needs work.
 
@@ -1129,7 +1158,7 @@ def find_cited_questions(domain: str, platform: str = "chat_gpt", limit: int = 2
     already cited as a source, most-asked first. Starts from the domain, so
     nobody has to guess keywords first. Use this to answer 'what does
     ChatGPT already cite us for' or to pick the keywords to feed
-    check_prompt_coverage and analyze_citation_gap.
+    analyze_citation_coverage and analyze_citation_gap.
 
     Read-only: no side effects, safe to retry. Costs 10 quota units/call
     (free tier is 30 units/month shared across every metered tool, so up to 3
@@ -1147,7 +1176,7 @@ def find_cited_questions(domain: str, platform: str = "chat_gpt", limit: int = 2
 
     This reads the provider's tracked answer corpus, the same measurement as
     find_citation_leaders, not a live answer: re-check a question with
-    check_prompt_coverage to see today's answer.
+    analyze_citation_coverage to see today's answer.
 
     Args:
         domain: bare domain, e.g. "example.com" (no https://, no www).
@@ -1188,24 +1217,35 @@ def find_cited_questions(domain: str, platform: str = "chat_gpt", limit: int = 2
 
 
 @mcp.tool(title="Show your past citation checks", annotations=READ_ONLY_EXTERNAL)
-def get_check_history(domain: str, keyword: str | None = None, limit: int = 50) -> dict:
-    """Read back your own earlier check_prompt_coverage results for a domain,
+def get_check_history(domain: str, keyword: str | None = None, limit: int = 50,
+                      page: str | None = None) -> dict:
+    """Read back your own earlier analyze_citation_coverage results for a domain,
     newest first, to show progress over time or to confirm whether a change
     (a rewrite, a new mention somewhere) moved anything. Use this for 'has
     our citation status changed since last week' without spending units.
+    Pass `page` to follow ONE page's citations over time instead of the whole
+    domain's.
 
     Costs 0 quota units: it only reads Vantage's own record of your checks,
     never the data provider. Results are kept 180 days per API key and are
     only visible to that key.
 
-    Returns: {"domain", "keyword" (or null for every keyword), "checks"
-    (newest first: {"keyword", "engine", "country", "language", "samples",
-    "cited_runs", "best_rank", "mentioned_runs", "checked_at"})}.
+    Returns: {"domain", "keyword" (or null for every keyword), "page" (the
+    URL asked about, or null), "checks" (newest first: {"keyword", "engine",
+    "country", "language", "samples", "cited_runs", "best_rank",
+    "mentioned_runs", "checked_at", "cited_pages" (your page URLs cited in
+    that check, or null for a check saved before page tracking), and with
+    `page` set, "page_cited" (true/false, or null when that check did not
+    record pages))}, and with `page` set also "times_cited" (checks that
+    cited that page) and "checks_with_page_data".
 
     Args:
         domain: the bare domain the checks were run for, e.g. "example.com".
         keyword: optional, only this keyword's history.
         limit: how many rows to return, 1 to 200. Default 50.
+        page: optional full URL of one page on the domain, e.g.
+            "https://example.com/pricing". Matched ignoring "www.", the
+            scheme, a trailing slash and any #fragment.
     """
     client_id = _client_id()
     if client_id is None:
@@ -1213,7 +1253,14 @@ def get_check_history(domain: str, keyword: str | None = None, limit: int = 50) 
     rows = store.check_history(client_id, _normalize_domain(domain), keyword,
                                max(1, min(int(limit or 50), 200)))
     _log_call("get_check_history", "success")
-    return {"domain": domain, "keyword": keyword, "checks": rows}
+    out = {"domain": domain, "keyword": keyword, "page": page}
+    if page:
+        want = _page_key(page)
+        for r in rows:
+            r["page_cited"] = None if r["cited_pages"] is None else want in {_page_key(u) for u in r["cited_pages"]}
+        out["times_cited"] = sum(1 for r in rows if r["page_cited"])
+        out["checks_with_page_data"] = sum(1 for r in rows if r["page_cited"] is not None)
+    return {**out, "checks": rows}
 
 
 def main() -> None:
