@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.11.0] - 2026-10-17
+
+### Added
+- **`get_supported_options`**, a free tool (0 units) that lists which engines, platforms and markets each tool accepts and the per-call limits, so an agent can pick valid arguments before spending anything.
+- **Trends side by side.** `analyze_citation_trend` takes `compare_domains` (up to 5 more domains) and returns each one's months and trend next to the main domain's. Each extra domain costs 1 unit; a domain the provider fails on is refunded and the rest still return.
+
 ## [1.10.0] - 2026-10-17
 
 ### Changed

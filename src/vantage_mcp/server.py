@@ -411,6 +411,33 @@ def _page_key(url: str) -> str:
     return host + parts.path.rstrip("/") + (f"?{parts.query}" if parts.query else "")
 
 
+def _trend_view(result: dict, months: int) -> dict:
+    """{"months", "trend"} for one domain's provider history, last `months`
+    entries (1 to 13)."""
+    window = result.get("months", [])[-max(1, min(months, 13)):]
+
+    # The current calendar month is always partial - checked on day 7 of a
+    # month, its mentions count is roughly 7/30 of what it will end up being,
+    # not a real reading. Comparing "earliest" to a partial "latest" reported
+    # a domain with a strong August as "flat, 0 -> 0" on 2026-09-07 simply
+    # because September had barely started. Excluded from the trend
+    # calculation, but kept in `months` (labeled) since a caller can still
+    # want to see the partial figure it has so far.
+    now = datetime.now(timezone.utc)
+    current_partial = bool(window) and (window[-1]["year"], window[-1]["month"]) == (now.year, now.month)
+    trend_window = window[:-1] if current_partial and len(window) > 1 else window
+
+    if not trend_window:
+        trend = {"direction": "no_data"}
+    else:
+        earliest, latest = trend_window[0]["mentions"], trend_window[-1]["mentions"]
+        direction = "flat" if latest == earliest else ("up" if latest > earliest else "down")
+        trend = {"direction": direction, "earliest_mentions": earliest, "latest_mentions": latest}
+        if current_partial:
+            trend["excluded_current_partial_month"] = True
+    return {"months": window, "trend": trend}
+
+
 def _refund_usage(cost: int) -> None:
     """Hand back quota _guard_usage already charged for a call that came
     back unusable (a provider error, or a response we could not parse).
@@ -472,6 +499,53 @@ def _cited_majority(cited_runs: int, samples: int) -> bool:
     return cited_runs > 0 and cited_runs * 2 >= samples
 
 
+@mcp.tool(title="List supported engines and markets", annotations=READ_ONLY_EXTERNAL)
+def get_supported_options() -> dict:
+    """List which AI engines, platforms and markets each Vantage tool
+    accepts, and the per-call limits, so you can pick valid arguments before
+    spending any quota. Use this to answer 'does Vantage cover Gemini in
+    Italy' or 'what can I pass as engine or platform'.
+
+    Costs 0 quota units - a fixed list, it never touches the data provider.
+
+    Returns: {"live_answer": {"tools" (analyze_citation_coverage,
+    analyze_citation_structure, analyze_citation_structure_batch,
+    analyze_citation_gap), "engines" (the values for `engine`),
+    "country" (any country name the provider accepts; for perplexity one of
+    "perplexity_countries" or a 2-letter ISO code), "language" (language
+    code), "max_samples", "max_keywords_per_call"}, "tracked_data":
+    {"tools" (find_citation_leaders, analyze_citation_trend,
+    find_cited_questions), "platforms" (the values for `platform`),
+    "chat_gpt_market" (the only market ChatGPT has tracked data for),
+    "other_markets" (where to get the rest), "max_trend_months",
+    "max_compare_domains" ({"find_citation_leaders", "analyze_citation_trend"})},
+    "default_market" ({"country", "language"})}. A market the provider does
+    not cover comes back as a refunded error, never a charge.
+    """
+    _log_call("get_supported_options", "success")
+    return {
+        "live_answer": {
+            "tools": ["analyze_citation_coverage", "analyze_citation_structure",
+                      "analyze_citation_structure_batch", "analyze_citation_gap"],
+            "engines": list(dfs.ENGINES),
+            "country": "any country name the provider accepts, e.g. \"Italy\"",
+            "perplexity_countries": sorted(c.title() for c in dfs._ISO_COUNTRIES),
+            "language": "language code, e.g. \"it\"",
+            "max_samples": dfs.MAX_SAMPLES,
+            "max_keywords_per_call": 10,
+        },
+        "tracked_data": {
+            "tools": ["find_citation_leaders", "analyze_citation_trend", "find_cited_questions"],
+            "platforms": sorted(VALID_PLATFORMS),
+            "chat_gpt_market": {"country": dfs.DEFAULT_COUNTRY, "language": dfs.DEFAULT_LANGUAGE},
+            "other_markets": "use platform \"google\" (Google's AI Overview), or a live-answer tool",
+            "max_trend_months": 13,
+            "max_compare_domains": {"find_citation_leaders": 10, "analyze_citation_trend": 5},
+        },
+        "default_market": {"country": dfs.DEFAULT_COUNTRY, "language": dfs.DEFAULT_LANGUAGE},
+    }
+
+
 @mcp.tool(title="Check remaining monthly units", annotations=READ_ONLY_EXTERNAL)
 def get_usage() -> dict:
     """Check how much of this billing period's quota is left, before
@@ -485,8 +559,9 @@ def get_usage() -> dict:
     "units_remaining"}. find_citation_leaders and find_cited_questions cost
     10 units/call; analyze_citation_trend, analyze_citation_structure (and
     its batch form, per keyword), analyze_citation_coverage (per keyword) and
-    analyze_citation_gap cost 1, times `samples` where a tool takes it.
-    get_check_history costs 0.
+    analyze_citation_gap cost 1, times `samples` where a tool takes it
+    (analyze_citation_trend: 1 per domain compared). get_check_history and
+    get_supported_options cost 0.
 
     stdio/local-dev mode (no HTTP access token) has no metering at all -
     this returns tier "unmetered" with no real limit in that case.
@@ -609,15 +684,17 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
 
 @mcp.tool(title="Track a site's AI citations over time", annotations=READ_ONLY_EXTERNAL)
 def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int = 6,
-                           country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE) -> dict:
+                           country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE,
+                           compare_domains: list[str] | None = None) -> dict:
     """Track how a domain's AI-citation count has moved month over month,
     so you can see whether visibility is growing or fading instead of
     only ever checking a single point in time. Use this to answer 'is our
     AI visibility improving' or 'did that content push actually move the
-    needle'.
+    needle'. Pass compare_domains to put competitors' trends next to it.
 
-    Read-only: no side effects, safe to retry. Costs 1 quota unit/call
-    (free tier is 30 units/month shared across every metered tool, so up to 30
+    Read-only: no side effects, safe to retry. Costs 1 quota unit per domain
+    (the main domain plus each one in compare_domains; free tier is 30
+    units/month shared across every metered tool, so up to 30 single-domain
     calls to this tool alone if nothing else is used that period).
 
     Returns: {"domain", "platform", "months" (list of {"year", "month",
@@ -635,8 +712,15 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
     current month is not excluded) already IS the current count, so there is
     no need for a separate call just to see it right now.
 
+    With compare_domains the result also carries "comparisons" (one
+    {"domain", "months", "trend"} per extra domain, same shape and month
+    window as above, in the order given, or {"domain", "error"} for one the
+    provider failed on - that one is refunded and the rest still return).
+
     Args:
         domain: bare domain to check, e.g. "example.com" (no https://, no www).
+        compare_domains: optional list of up to 5 more bare domains to track
+            over the same months, e.g. ["asana.com", "monday.com"].
         platform: "chat_gpt" or "google" (Google's AI Overview). Defaults
             to chat_gpt. Perplexity and Gemini aren't available - the
             underlying data provider doesn't cover them for this check.
@@ -650,6 +734,8 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
             option for chat_gpt).
     """
     country, language = _market(country, language)
+    if compare_domains and len(compare_domains) > 5:
+        return {"error": f"Max 5 compare_domains per call, got {len(compare_domains)}."}
     if err := _guard_platform(platform) or _guard_mentions_market(platform, country, language):
         _log_call("analyze_citation_trend", "invalid_platform")
         return {"error": err}
@@ -676,31 +762,26 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
         _log_call("analyze_citation_trend", "error")
         return result
 
-    window = result.get("months", [])[-max(1, min(months, 13)):]
-
-    # The current calendar month is always partial - checked on day 7 of a
-    # month, its mentions count is roughly 7/30 of what it will end up being,
-    # not a real reading. Comparing "earliest" to a partial "latest" reported
-    # a domain with a strong August as "flat, 0 -> 0" on 2026-09-07 simply
-    # because September had barely started. Excluded from the trend
-    # calculation, but kept in `months` (labeled) since a caller can still
-    # want to see the partial figure it has so far.
-    now = datetime.now(timezone.utc)
-    current_partial = bool(window) and (window[-1]["year"], window[-1]["month"]) == (now.year, now.month)
-    trend_window = window[:-1] if current_partial and len(window) > 1 else window
-
-    if not trend_window:
-        trend = {"direction": "no_data"}
-    else:
-        earliest, latest = trend_window[0]["mentions"], trend_window[-1]["mentions"]
-        direction = "flat" if latest == earliest else ("up" if latest > earliest else "down")
-        trend = {"direction": direction, "earliest_mentions": earliest, "latest_mentions": latest}
-        if current_partial:
-            trend["excluded_current_partial_month"] = True
-
+    out = {"domain": domain, "platform": platform, "country": country, "language": language,
+           **_trend_view(result, months)}
+    if compare_domains:
+        out["comparisons"] = []
+        for other in compare_domains:
+            if err := _guard_usage(1):
+                _log_call("analyze_citation_trend", "quota_denied")
+                out["comparisons"].append({"domain": other, "error": err})
+                continue
+            try:
+                res = dfs.citation_trend(domain=other, platform=platform, country=country, language=language)
+            except dfs.DataForSEOError:
+                res = {"error": TRANSIENT_ERROR}
+            if res.get("error"):
+                _refund_usage(1)
+                out["comparisons"].append({"domain": other, "error": TRANSIENT_ERROR})
+                continue
+            out["comparisons"].append({"domain": other, **_trend_view(res, months)})
     _log_call("analyze_citation_trend", "success")
-    return {"domain": domain, "platform": platform, "country": country, "language": language,
-            "months": window, "trend": trend}
+    return out
 
 
 @mcp.tool(title="Analyze a winning AI answer", annotations=READ_ONLY_EXTERNAL)
