@@ -6,6 +6,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Tool descriptions describe the tool and no more.** Removed the "use X instead", "use this first" and "carry out the brief" guidance that pointed the model at other tools or told it how to behave, because Anthropic's connector review rejects descriptions that do. What each tool does, returns and costs is unchanged.
+
 ### Fixed
 - **Tool titles in the nested annotations.** Every tool already had a `title`; each now also carries it as `annotations.title`, which is the field the Claude directory form reads (it flagged "Missing title annotation" on all ten). No behaviour changes.
 - **`analyze_citation_gap` read some pages as having no opening.** The page provider's markdown lists a page's tables before its prose, so a page with an introduction above a comparison table was read as starting at the table and reported an opening of 0 words. The opening and the outline are now read from the provider's own page-order content, with the markdown as the fallback. Tables are still detected from the markdown. Lines that come first in page order but are not prose (a GitHub repository page leads with "Notifications You must be signed in to change notification settings") are skipped: the opening is the first block of at least six words that ends like a sentence, and a page with none is read as before.

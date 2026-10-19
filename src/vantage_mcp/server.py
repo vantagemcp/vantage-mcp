@@ -121,8 +121,8 @@ mcp = MCPServer(
         "user asks things like 'does ChatGPT know about my product', 'what does "
         "AI cite us for', 'who gets cited for this keyword in AI search', 'did "
         "our changes work', or 'what does a winning AI answer look like for X'. "
-        "Answers vary between runs: use samples=3 before telling someone they "
-        "are or are not cited."
+        "Answers vary between runs, so one sample is weak evidence that a "
+        "site is or is not cited."
     ),
     # OAuth sign-in (1.8.0). The provider also verifies plain API keys, so
     # every key issued before keeps working exactly as it did.
@@ -614,9 +614,6 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
     analyze_citation_structure's single live answer - the two can
     legitimately disagree on whether a given domain shows up.
 
-    Use analyze_citation_coverage instead if you already know which domain you
-    care about and just want to know whether it is cited.
-
     Args:
         keyword: the topic/query to check, e.g. "best project management tool".
         platform: "chat_gpt" or "google" (Google's AI Overview). Defaults
@@ -822,11 +819,6 @@ def analyze_citation_structure(keyword: str, country: str = dfs.DEFAULT_COUNTRY,
     cited each domain, most often first). Answers change from run to run, so
     a domain cited in every sample is a far stronger signal than one sample.
 
-    Use analyze_citation_structure_batch instead if you need this for more than
-    one keyword - one call per topic here adds up fast for a cluster. Use
-    analyze_citation_gap instead if you have your own page for this
-    keyword and want the gap to the winner, not just the winner's shape.
-
     Args:
         keyword: the topic/query to analyze, e.g. "how to reduce churn".
         country: market to read the answer in, e.g. "Italy". Defaults to
@@ -868,10 +860,8 @@ def analyze_citation_structure_batch(keywords: list[str], country: str = dfs.DEF
                                      language: str = dfs.DEFAULT_LANGUAGE, engine: str = "chat_gpt") -> dict:
     """Analyze the structural shape of the winning AI answer across several
     related keywords/topics in one call: does each lead with a list, how
-    long is the opening, how many sources it cites. Use this for content
-    planning across a topic cluster, e.g. before writing several related
-    pieces meant to get cited, instead of calling analyze_citation_structure once
-    per topic.
+    long is the opening, how many sources it cites. It covers a topic
+    cluster in one call, for content planning across related pieces.
 
     Read-only: no side effects, safe to retry. Costs 1 quota unit per
     keyword in the batch (free tier is 30 units/month shared across all
@@ -967,13 +957,9 @@ def analyze_citation_coverage(domain: str, keywords: list[str], brand: str | Non
                           country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE,
                           engine: str = "chat_gpt", samples: int = 1) -> dict:
     """Check which of several prompts/keywords actually cite a specific
-    domain, and which ones don't. This is usually the first real question
-    in an AI-answer-engine audit - not "what does a winning answer look
-    like" (analyze_citation_structure) or "who wins this one topic"
-    (find_citation_leaders), but "out of everything we care about, where do
-    we already show up, and where are we invisible." Use this first, then
-    use analyze_citation_gap on whichever keywords come back not cited to
-    see what to actually change.
+    domain, and which ones don't. It answers "out of everything we care about, where do we already
+    show up, and where are we invisible"; its not_cited list is the set of
+    keywords worth a closer look.
 
     Read-only for the caller, safe to retry. Costs 1 quota unit per keyword
     per sample (1 sample by default; free tier is 30 units/month shared
@@ -1012,8 +998,8 @@ def analyze_citation_coverage(domain: str, keywords: list[str], brand: str | Non
     knows you, it just isn't linking you), "mention_terms" (exactly what was
     looked for in the answer text)}. "Cited" and "mentioned" are separate
     claims and are never merged. Answers change from run to run: with
-    samples=1 a single answer decides "cited", so use samples=3 before
-    telling someone they are or are not cited.
+    samples=1 a single answer decides "cited", so one sample is weak
+    evidence either way.
 
     Args:
         domain: bare domain to check, e.g. "example.com" (no https://, no www).
@@ -1168,9 +1154,8 @@ def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT
     actually cited for this keyword, and return a fix brief: ordered
     rewrite instructions for your page, not just a description of the
     winner. Use this to answer 'what should I change on this page to get
-    cited' rather than only 'what does a winning answer look like'. Carry
-    out the fix_brief on the user's page in their own words; it never
-    contains the cited answer's text.
+    cited' rather than only 'what does a winning answer look like'. The
+    fix brief never contains the cited answer's text.
 
     Read-only: no side effects, safe to retry. Costs 1 quota unit/call
     (free tier is 30 units/month shared across every metered tool, so up to 30
@@ -1192,12 +1177,6 @@ def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT
     mentioned on. Page shape gets a page into the running; being cited is
     decided mostly by what other sites say about the brand)}, or {"error"} if
     either side couldn't be fetched/parsed.
-
-    Use analyze_citation_structure instead if you just want the winning
-    answer's shape, not a comparison against your own page. Use
-    analyze_citation_coverage first if you have several keywords and do not yet
-    know which ones you are missing from - this tool is for one keyword
-    you already know needs work.
 
     Args:
         keyword: the topic/query to check, e.g. "best project management tool".
