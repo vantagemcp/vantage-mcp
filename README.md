@@ -1,6 +1,7 @@
 # Vantage
 
 [![vantage-mcp MCP server](https://glama.ai/mcp/servers/vantagemcp/vantage-mcp/badges/score.svg)](https://glama.ai/mcp/servers/vantagemcp/vantage-mcp)
+[![MCP status](https://mcpi.app/servers/vantage/badge.svg)](https://mcpi.app/servers/vantage)
 
 Vantage is an AI visibility MCP server that checks whether ChatGPT, Gemini, Perplexity and Google AI Overviews cite your site.
 
