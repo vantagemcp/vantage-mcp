@@ -42,14 +42,19 @@ DOMAIN = "vantagemcp.dev"
 
 # Every tool below shares this exact profile: pure reads against a
 # third-party data provider, no writes, safe to retry, results depend
-# on external (non-deterministic over time) data. One shared constant
+# on external (non-deterministic over time) data. One helper
 # so each @mcp.tool() call doesn't repeat identical annotation blocks.
-READ_ONLY_EXTERNAL = ToolAnnotations(
-    read_only_hint=True,
-    destructive_hint=False,
-    idempotent_hint=True,
-    open_world_hint=True,
-)
+def _read_only(title: str) -> ToolAnnotations:
+    # The directory form reads annotations.title, not only the tool's own title,
+    # so the same title is set in both places (flagged "Missing title annotation"
+    # on every tool in the Claude directory portal, 2026-10-19).
+    return ToolAnnotations(
+        title=title,
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    )
 
 # DataForSEO's llm_mentions endpoint family (what find_citation_leaders
 # and analyze_citation_trend call) only ever supports these two - confirmed
@@ -499,7 +504,7 @@ def _cited_majority(cited_runs: int, samples: int) -> bool:
     return cited_runs > 0 and cited_runs * 2 >= samples
 
 
-@mcp.tool(title="List supported engines and markets", annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="List supported engines and markets", annotations=_read_only("List supported engines and markets"))
 def get_supported_options() -> dict:
     """List which AI engines, platforms and markets each Vantage tool
     accepts, and the per-call limits, so you can pick valid arguments before
@@ -546,7 +551,7 @@ def get_supported_options() -> dict:
     }
 
 
-@mcp.tool(title="Check remaining monthly units", annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Check remaining monthly units", annotations=_read_only("Check remaining monthly units"))
 def get_usage() -> dict:
     """Check how much of this billing period's quota is left, before
     spending any of it. Use this to answer 'how many checks do I have left'
@@ -575,7 +580,7 @@ def get_usage() -> dict:
     return store.usage_status(token.client_id, tier)
 
 
-@mcp.tool(title="Find who AI cites for a question", annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Find who AI cites for a question", annotations=_read_only("Find who AI cites for a question"))
 def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_domain: str | None = None,
                           country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE,
                           compare_domains: list[str] | None = None) -> dict:
@@ -682,7 +687,7 @@ def find_citation_leaders(keyword: str, platform: str = "chat_gpt", compare_doma
     return result
 
 
-@mcp.tool(title="Track a site's AI citations over time", annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Track a site's AI citations over time", annotations=_read_only("Track a site's AI citations over time"))
 def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int = 6,
                            country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE,
                            compare_domains: list[str] | None = None) -> dict:
@@ -784,7 +789,7 @@ def analyze_citation_trend(domain: str, platform: str = "chat_gpt", months: int 
     return out
 
 
-@mcp.tool(title="Analyze a winning AI answer", annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Analyze a winning AI answer", annotations=_read_only("Analyze a winning AI answer"))
 def analyze_citation_structure(keyword: str, country: str = dfs.DEFAULT_COUNTRY,
                                language: str = dfs.DEFAULT_LANGUAGE, engine: str = "chat_gpt",
                                samples: int = 1) -> dict:
@@ -858,7 +863,7 @@ def analyze_citation_structure(keyword: str, country: str = dfs.DEFAULT_COUNTRY,
     return result
 
 
-@mcp.tool(title="Analyze winning AI answers in bulk", annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Analyze winning AI answers in bulk", annotations=_read_only("Analyze winning AI answers in bulk"))
 def analyze_citation_structure_batch(keywords: list[str], country: str = dfs.DEFAULT_COUNTRY,
                                      language: str = dfs.DEFAULT_LANGUAGE, engine: str = "chat_gpt") -> dict:
     """Analyze the structural shape of the winning AI answer across several
@@ -957,7 +962,7 @@ def analyze_citation_structure_batch(keywords: list[str], country: str = dfs.DEF
     return {"results": results, "summary": summary}
 
 
-@mcp.tool(title="Check if AI cites your site", annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Check if AI cites your site", annotations=_read_only("Check if AI cites your site"))
 def analyze_citation_coverage(domain: str, keywords: list[str], brand: str | None = None,
                           country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE,
                           engine: str = "chat_gpt", samples: int = 1) -> dict:
@@ -1156,7 +1161,7 @@ def analyze_citation_coverage(domain: str, keywords: list[str], brand: str | Non
     }
 
 
-@mcp.tool(title="Compare your page with the cited answer", annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Compare your page with the cited answer", annotations=_read_only("Compare your page with the cited answer"))
 def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT_COUNTRY,
                          language: str = dfs.DEFAULT_LANGUAGE, engine: str = "chat_gpt") -> dict:
     """Compare your own page's structure against the AI-generated answer
@@ -1232,7 +1237,7 @@ def analyze_citation_gap(keyword: str, your_url: str, country: str = dfs.DEFAULT
     return result
 
 
-@mcp.tool(title="Find questions AI cites your site for", annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Find questions AI cites your site for", annotations=_read_only("Find questions AI cites your site for"))
 def find_cited_questions(domain: str, platform: str = "chat_gpt", limit: int = 20,
                          country: str = dfs.DEFAULT_COUNTRY, language: str = dfs.DEFAULT_LANGUAGE) -> dict:
     """Find the questions people ask AI answer engines where a domain is
@@ -1297,7 +1302,7 @@ def find_cited_questions(domain: str, platform: str = "chat_gpt", limit: int = 2
     return result
 
 
-@mcp.tool(title="Show your past citation checks", annotations=READ_ONLY_EXTERNAL)
+@mcp.tool(title="Show your past citation checks", annotations=_read_only("Show your past citation checks"))
 def get_check_history(domain: str, keyword: str | None = None, limit: int = 50,
                       page: str | None = None) -> dict:
     """Read back your own earlier analyze_citation_coverage results for a domain,
