@@ -202,6 +202,12 @@ Every tool except `get_usage` takes optional `country` (e.g. `"Italy"`) and `lan
   Page shape gets a page into the running; being cited is decided mostly by what other sites say about the brand,
   which is why every brief ends with an off-site step.
 
+## Agent skill
+
+[`vantage-citation-audit`](https://github.com/vantagemcp/ai-visibility-skills) teaches your agent the whole loop:
+measure which keywords cite you, diagnose one page, apply the fix brief, re-check. It only describes the workflow;
+every check is a Vantage tool call.
+
 ## Monthly research
 
 Every month Vantage asks ChatGPT, Gemini and Perplexity the same everyday questions and publishes which sites
