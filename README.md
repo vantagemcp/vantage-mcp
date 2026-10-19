@@ -96,6 +96,62 @@ Ten tools. Units are what a call costs against your monthly quota (Free: 30, Pro
 
 ## Install
 
+### Windsurf (Cascade)
+
+Add Vantage to `mcp_config.json` (open it from Cascade’s MCP settings):
+
+```json
+{
+  "mcpServers": {
+    "vantage": {
+      "serverUrl": "https://vantagemcp.dev/mcp",
+      "headers": { "Authorization": "Bearer ${env:VANTAGE_API_KEY}" }
+    }
+  }
+}
+```
+
+Set `VANTAGE_API_KEY` in your environment before starting Windsurf. See the [Cascade MCP configuration docs](https://docs.devin.ai/desktop/cascade/mcp).
+
+### Zed
+
+In Settings → AI → MCP Servers, add a remote server, or add this entry to your Zed settings file:
+
+```json
+{
+  "context_servers": {
+    "vantage": {
+      "url": "https://vantagemcp.dev/mcp",
+      "headers": { "Authorization": "Bearer YOUR_API_KEY" }
+    }
+  }
+}
+```
+
+Replace `YOUR_API_KEY` with a Vantage API key. See the [Zed MCP docs](https://zed.dev/docs/ai/mcp).
+
+### Codex CLI
+
+Add the remote server, then authenticate with Vantage:
+
+```bash
+codex mcp add vantage --url https://vantagemcp.dev/mcp
+codex mcp login vantage
+```
+
+See the [Codex MCP docs](https://developers.openai.com/codex/mcp/).
+
+### Gemini CLI
+
+Add the Streamable HTTP server with Gemini CLI’s MCP command:
+
+```bash
+gemini mcp add vantage https://vantagemcp.dev/mcp --transport http
+```
+
+See the [Gemini CLI MCP reference](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/cli-reference.md).
+
+
 **Claude Code, Cursor, VS Code:** use the buttons or the command at the top. All three sign in to Vantage in
 your browser on first use.
 
