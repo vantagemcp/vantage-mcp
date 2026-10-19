@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **`analyze_citation_gap` read some pages as having no opening.** The page provider's markdown lists a page's tables before its prose, so a page with an introduction above a comparison table was read as starting at the table and reported an opening of 0 words. The opening and the outline are now read from the provider's own page-order content, with the markdown as the fallback. Tables are still detected from the markdown. A page whose own site chrome comes first (a GitHub README, for example) can still report that chrome as its opening.
+
 ## [1.11.0] - 2026-10-17
 
 ### Added

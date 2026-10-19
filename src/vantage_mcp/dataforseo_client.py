@@ -785,39 +785,81 @@ _MD_LINK_URL_RE = re.compile(
 )
 
 
-def _page_markdown(url: str) -> tuple[str, str | None]:
-    """Your page as the provider's markdown, or ("", error). ~$0.003/call
-    (on_page/content_parsing, no JS rendering)."""
+def _page_fetch(url: str) -> tuple[str, list, str | None]:
+    """Your page as (the provider's markdown, its main_topic list, error).
+    ~$0.003/call (on_page/content_parsing, no JS rendering). The topics are in
+    the page's own order; the markdown is not (see _ordered_markdown)."""
     body = [{"url": url, "markdown_view": True}]
     res = _call("on_page/content_parsing/live", body, timeout=60)
     try:
         task = res["tasks"][0]
         if task.get("status_code") != 20000:
-            return "", task.get("status_message")
+            return "", [], task.get("status_message")
         items = task["result"][0].get("items") or []
         if not items:
-            return "", "page had no parseable content (crawler found nothing to read)"
+            return "", [], "page had no parseable content (crawler found nothing to read)"
         item = items[0]
         if item.get("status_code") and item["status_code"] >= 400:
-            return "", f"page returned HTTP {item['status_code']}"
-        return item.get("page_as_markdown") or "", None
+            return "", [], f"page returned HTTP {item['status_code']}"
+        topics = ((item.get("page_content") or {}).get("main_topic")) or []
+        return item.get("page_as_markdown") or "", topics, None
     except Exception as e:
-        return "", str(e)
+        return "", [], str(e)
 
 
-def _page_read(url: str, markdown: str) -> dict:
+def _page_markdown(url: str) -> tuple[str, str | None]:
+    """Your page as the provider's markdown, or ("", error)."""
+    markdown, _topics, err = _page_fetch(url)
+    return markdown, err
+
+
+# The provider's page_as_markdown does not keep the page's order: it puts every
+# table and its heading first and the prose after, so a page whose hero paragraph
+# sits above a comparison table was read as opening with the table and reported
+# an opening of 0 words. The same response's page_content.main_topic is in the
+# page's own order (heading, then its paragraphs, then its tables separately), so
+# the opening and outline are read from that. Tables are left out on purpose:
+# they are read from the markdown (has_table), and a table must not become text.
+# Found 2026-10-19 on vantagemcp.dev/ai-visibility-mcp-servers/ and a GitHub README.
+def _ordered_markdown(topics: list) -> str:
+    parts = []
+    for topic in topics or []:
+        if not isinstance(topic, dict):
+            continue
+        title = (topic.get("h_title") or "").strip()
+        if title:
+            level = topic.get("level")
+            level = level if isinstance(level, int) and 1 <= level <= 6 else 2
+            parts.append("#" * level + " " + title)
+        for piece in topic.get("primary_content") or []:
+            text = (piece.get("text") if isinstance(piece, dict) else "") or ""
+            if text.strip():
+                parts.append(text.strip())
+    return "\n\n".join(parts)
+
+
+def _page_text(markdown: str, topics: list | None = None) -> str:
+    """The page's body for opening and outline: from the ordered topics when the
+    provider sent any text, otherwise from the markdown as before."""
+    ordered = _ordered_markdown(topics or [])
+    if any(line.strip() and not line.startswith("#") for line in ordered.split("\n")):
+        return _page_body(ordered)
+    return _page_body(markdown)
+
+
+def _page_read(url: str, markdown: str, topics: list | None = None) -> dict:
     links = _MD_LINK_URL_RE.findall(markdown)
     domains = []
     for link in links:
         domain = urllib.parse.urlsplit(link).hostname
         if domain and domain not in domains:
             domains.append(domain)
-    body = _page_body(markdown)
+    body = _page_text(markdown, topics)
     return {
         "url": url,
         **_parse_opening(body),
         "outline": _outline(body),
-        "has_table": _has_table(body),
+        "has_table": _has_table(_page_body(markdown)),
         "num_links_out": len(links),
         "linked_domains": domains[:10],
     }
@@ -829,11 +871,11 @@ def page_structure(url: str) -> dict:
     comparable. The opening is read from the page body, past the title and
     page chrome (see _page_body). Outbound links stand in for "sources cited"
     since a normal webpage has no DataForSEO-supplied source list."""
-    markdown, err = _page_markdown(url)
+    markdown, topics, err = _page_fetch(url)
     if err:
         return {"url": url, "error": err}
     try:
-        return _page_read(url, markdown)
+        return _page_read(url, markdown, topics)
     except Exception as e:
         return {"url": url, "error": str(e)}
 
@@ -935,14 +977,14 @@ def citation_gap(keyword: str, your_url: str,
     winning = citation_structure(keyword, country=country, language=language, engine=engine)
     if winning.get("error"):
         return {"keyword": keyword, "your_url": your_url, "error": f"couldn't analyze the winning answer: {winning['error']}"}
-    markdown, err = _page_markdown(your_url)
+    markdown, topics, err = _page_fetch(your_url)
     if err:
         return {"keyword": keyword, "your_url": your_url, "error": f"couldn't fetch/parse your_url: {err}"}
     try:
-        yours = _page_read(your_url, markdown)
+        yours = _page_read(your_url, markdown, topics)
     except Exception as e:
         return {"keyword": keyword, "your_url": your_url, "error": f"couldn't fetch/parse your_url: {e}"}
-    page_words = _norm_words(strip_markdown(_page_body(markdown)))
+    page_words = _norm_words(strip_markdown(_page_body(markdown) + "\n" + _ordered_markdown(topics)))
     missing = _possibly_missing(winning["outline"], page_words, keyword)
 
     gaps = []
