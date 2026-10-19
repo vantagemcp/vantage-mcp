@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.11.1] - 2026-10-20
 
 ### Changed
 - **Tool descriptions describe the tool and no more.** Removed the "use X instead", "use this first" and "carry out the brief" guidance that pointed the model at other tools or told it how to behave, because Anthropic's connector review rejects descriptions that do. What each tool does, returns and costs is unchanged.
