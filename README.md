@@ -24,6 +24,11 @@ claude mcp add --transport http vantage https://vantagemcp.dev/mcp
 
 Free tier: 30 units a month, no card. Sign in with your email the first time a tool runs.
 
+https://github.com/user-attachments/assets/38df5876-16ac-403d-b39f-170a2458cfb1
+
+A real check on vantagemcp.dev, 50 seconds, not sped up. Answers vary run to run: this keyword was cited in 0 of 3 answers earlier today (see the output below) and in 1 of 3 here, which is why Vantage reports cited_runs.
+
+
 ## What a real check looks like
 
 We ran Vantage on its own domain on 19 October 2026: five questions people ask when they look for a tool like
