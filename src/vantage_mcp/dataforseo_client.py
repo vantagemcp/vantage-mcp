@@ -838,12 +838,33 @@ def _ordered_markdown(topics: list) -> str:
     return "\n\n".join(parts)
 
 
+_PROSE_MIN_WORDS = 6
+
+
+def _skip_site_chrome(ordered: str) -> str:
+    """Drops the blocks before the first real sentence of an ordered page. Sites
+    that wrap their content in an app shell (a GitHub repository page leads with
+    "Notifications You must be signed in to change notification settings" and a
+    one-line "About") put that shell first in page order. A real paragraph ends
+    like a sentence and has more than a label's worth of words; the shell's lines
+    do not. If no block qualifies the page is returned unchanged, so a page whose
+    intro has no full stop is read as before."""
+    blocks = ordered.split("\n\n")
+    for i, block in enumerate(blocks):
+        block = block.strip()
+        if block.startswith("#"):
+            continue
+        if len(block.split()) >= _PROSE_MIN_WORDS and _SENTENCE_END_RE.search(block) and not block.endswith(":"):
+            return "\n\n".join(blocks[i:])
+    return ordered
+
+
 def _page_text(markdown: str, topics: list | None = None) -> str:
     """The page's body for opening and outline: from the ordered topics when the
     provider sent any text, otherwise from the markdown as before."""
     ordered = _ordered_markdown(topics or [])
     if any(line.strip() and not line.startswith("#") for line in ordered.split("\n")):
-        return _page_body(ordered)
+        return _page_body(_skip_site_chrome(ordered))
     return _page_body(markdown)
 
 
